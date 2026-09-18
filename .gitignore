@@ -216,3 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local market data
+data/raw/
+data/cache/
+data/tmp/
+data/journal/
+data/profile/
+data/strategies/
+data/*.csv
+data/*.jsonl
+*.parquet
+*.feather
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+data/paper/
