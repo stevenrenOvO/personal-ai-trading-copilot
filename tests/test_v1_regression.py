@@ -134,6 +134,7 @@ def test_backtest_stop_loss_closes_trade(tmp_path):
             {"trade_date": "20240102", "ts_code": "000001.SZ", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "pre_close": 10.0, "change": 0.0, "pct_chg": 0.0, "vol": 1000.0, "amount": 10000.0},
             {"trade_date": "20240103", "ts_code": "000001.SZ", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "pre_close": 10.0, "change": 0.0, "pct_chg": 0.0, "vol": 1000.0, "amount": 10000.0},
             {"trade_date": "20240104", "ts_code": "000001.SZ", "open": 9.0, "high": 9.2, "low": 8.8, "close": 9.0, "pre_close": 10.0, "change": -1.0, "pct_chg": -10.0, "vol": 1000.0, "amount": 9000.0},
+            {"trade_date": "20240105", "ts_code": "000001.SZ", "open": 9.1, "high": 9.2, "low": 9.0, "close": 9.1, "pre_close": 9.0, "change": 0.1, "pct_chg": 1.11, "vol": 1000.0, "amount": 9100.0},
         ],
     )
     engine = AShareBacktestEngine(
@@ -148,6 +149,7 @@ def test_backtest_stop_loss_closes_trade(tmp_path):
     result = engine.run()
     assert result.trade_log, "stop-loss should have closed the trade"
     assert result.trade_log[0].pnl < 0
+    assert result.trade_log[0].exit_date == "20240105"  # confirmed close -> next open
 
 
 def test_emotion_accepts_external_market_state():

@@ -55,6 +55,7 @@ def fetch_full_market_snapshot_tencent(
 
     records: list[dict[str, Any]] = []
     quote_time = ""
+    quote_date = ""
     for i in range(0, len(codes), _TENCENT_BATCH):
         batch = codes[i : i + _TENCENT_BATCH]
         query = ",".join(_exchange_prefix(c) for c in batch)
@@ -97,6 +98,7 @@ def fetch_full_market_snapshot_tencent(
                 raw = str(f[30])
                 if len(raw) >= 14:
                     quote_time = f"{raw[8:10]}:{raw[10:12]}:{raw[12:14]}"
+                    quote_date = raw[:8]
 
     frame = pd.DataFrame(records)
     meta = {
@@ -104,6 +106,7 @@ def fetch_full_market_snapshot_tencent(
         "timeliness": "delayed",
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "quote_time": quote_time,
+        "quote_date": quote_date,
         "rows": len(frame),
     }
     return frame, meta
@@ -232,6 +235,9 @@ def fetch_full_market_snapshot() -> tuple[pd.DataFrame, dict[str, Any]]:
             errors.append(f"{name}: {exc}")
             continue
         if frame is not None and not frame.empty:
+            if name == "sina" and not meta.get("quote_date") and len(str(meta.get("quote_time", ""))) < 14:
+                errors.append("sina: quote date unavailable")
+                continue
             if errors:
                 meta["fallback_from"] = "; ".join(errors)
             return frame, meta

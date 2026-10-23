@@ -132,7 +132,7 @@ class _CalendarSession(_Session):
         return conn
 
 
-def test_all_missing_recent_sessions_are_filled_oldest_first():
+def test_all_missing_recent_sessions_are_filled_newest_first():
     """After a few days away the app must heal every gap, not just today."""
     runtime = _Runtime(_HistoryProviderStub())
     stored = {"20260915"}                 # the store stopped here; older days exist
@@ -148,7 +148,7 @@ def test_all_missing_recent_sessions_are_filled_oldest_first():
         run_sync=True,
     )
     assert started is True
-    assert calls == ["20260916", "20260917", "20260918"]   # oldest first
+    assert calls == ["20260918", "20260917", "20260916"]   # usable current pages first
 
 
 def test_gap_lookback_is_bounded():

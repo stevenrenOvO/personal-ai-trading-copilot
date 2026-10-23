@@ -43,6 +43,7 @@ _NUMERIC = {"price", "change", "pct_chg", "pre_close", "open", "high", "low", "v
 @dataclass
 class QuoteMeta:
     source: str = "sina"
+    quote_date: Optional[str] = None
     kind: str = "daily_snapshot"
     as_of: Optional[str] = None
     quote_time: Optional[str] = None
@@ -79,6 +80,7 @@ class QuoteService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._fail_count = 0
+        self._next_attempt = 0.0
 
         self._frame: Optional[pd.DataFrame] = None
         self._meta = QuoteMeta()
@@ -87,7 +89,8 @@ class QuoteService:
 
     # -- schema / persistence -----------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, timeout=30)
+        from backend.data.sqlite import connect
+        return connect(self.db_path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -118,6 +121,7 @@ class QuoteService:
             kind="daily_snapshot",
             as_of=meta_rows.get("as_of"),
             quote_time=meta_rows.get("quote_time"),
+            quote_date=meta_rows.get("quote_date") or None,
             rows=int(meta_rows.get("rows", len(frame)) or len(frame)),
         )
         with self._lock:
@@ -144,6 +148,7 @@ class QuoteService:
                     ("source", meta.source),
                     ("as_of", meta.as_of or ""),
                     ("quote_time", meta.quote_time or ""),
+                    ("quote_date", meta.quote_date or ""),
                     ("rows", str(meta.rows)),
                 ],
             )
@@ -168,12 +173,12 @@ class QuoteService:
         # After the close, today's snapshot *is* the day's final value: calling
         # it "stale" for the rest of the evening is a false alarm, and it would
         # keep a pointless 30s refresh loop running all night.
-        if age is not None and self._closed_for_today():
+        if age is not None and self._closed_for_today() and not self._meta.error:
             self._meta.is_stale = False
             if self._meta.status != "error":
                 self._meta.status = "final"
             return
-        self._meta.is_stale = age is None or age > self.ttl_seconds
+        self._meta.is_stale = bool(self._meta.error) or age is None or age > self.ttl_seconds
         if self._meta.status != "error":
             self._meta.status = "stale" if self._meta.is_stale else "ok"
 
@@ -183,13 +188,17 @@ class QuoteService:
             from backend.market.session import get_trading_session
 
             session = get_trading_session()
-            if session.phase() not in ("收盘", "盘后"):
+            info = session.describe_cached()
+            if info["phase"] not in ("收盘", "盘后", "休市", "盘前"):
                 return False
-            day = session.current_trading_day()
+            day = info["expected_daily_date"] if info["phase"] == "盘前" else info["current_trading_day"]
         except Exception:  # noqa: BLE001
             return False
-        quote_day = (self._meta.quote_time or "")[:8]
-        return bool(day) and quote_day == day
+        quote_day = self._meta.quote_date or (self._meta.quote_time or "")[:8]
+        quote_time = self._meta.quote_time or ""
+        clock_part = quote_time[8:14] if len(quote_time) >= 14 and quote_time[:8].isdigit() else quote_time.replace(":", "")
+        # A morning snapshot does not become a closing snapshot as time passes.
+        return bool(day) and quote_day == day and len(clock_part) == 6 and clock_part.isdigit() and "150000" <= clock_part <= "235959"
 
     # -- public API ----------------------------------------------------
     def get(self) -> tuple[pd.DataFrame, QuoteMeta]:
@@ -199,7 +208,7 @@ class QuoteService:
             frame = self._frame
             meta = QuoteMeta(**self._meta.to_dict())
             stale = self._meta.is_stale
-        if stale:
+        if stale and time.monotonic() >= self._next_attempt:
             self._wake.set()
         if frame is None:
             frame = pd.DataFrame(columns=SNAPSHOT_COLUMNS)
@@ -207,6 +216,11 @@ class QuoteService:
 
     def refresh(self) -> QuoteMeta:
         """Fetch synchronously (used by the background thread, tests and CLI)."""
+        try:
+            from backend.market.session import get_trading_session
+            get_trading_session().ensure_calendar()
+        except Exception:
+            pass
         try:
             frame, raw = self._fetch()
         except Exception as exc:  # noqa: BLE001
@@ -218,6 +232,8 @@ class QuoteService:
             kind="daily_snapshot",
             as_of=str(raw.get("fetched_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
             quote_time=str(raw.get("quote_time", "") or ""),
+            quote_date=raw.get("quote_date") or (str(raw.get("quote_time", ""))[:8]
+                if len(str(raw.get("quote_time", ""))) >= 14 else None),
             rows=int(len(frame)),
         )
         with self._lock:
@@ -225,6 +241,7 @@ class QuoteService:
             self._meta = meta
             self._meta.error = None
             self._fail_count = 0
+            self._next_attempt = 0.0
             # Let the age decide the status: never report "ok" for data whose
             # age already exceeds the TTL.
             self._apply_age()
@@ -238,6 +255,7 @@ class QuoteService:
     def _record_error(self, message: str) -> QuoteMeta:
         with self._lock:
             self._fail_count += 1
+            self._next_attempt = time.monotonic() + min(300.0, 15.0 * (2 ** min(self._fail_count - 1, 4)))
             self._meta.error = message
             self._apply_age()
             # A failed refresh means the cached data is no longer confirmed
@@ -266,14 +284,14 @@ class QuoteService:
         while not self._stop.is_set():
             with self._lock:
                 self._apply_age()
-                need = self._meta.is_stale
+                need = self._meta.is_stale and time.monotonic() >= self._next_attempt
             wait_for = self.refresh_interval
             if need:
                 meta = self.refresh()
                 if meta.status == "error":
                     # Hammering a failing vendor makes a block worse, so back
                     # off progressively until the source recovers.
-                    wait_for = min(300.0, 15.0 * (2 ** min(max(self._fail_count - 1, 0), 4)))
+                    wait_for = max(0.1, self._next_attempt - time.monotonic())
             self._wake.wait(wait_for)
             self._wake.clear()
 

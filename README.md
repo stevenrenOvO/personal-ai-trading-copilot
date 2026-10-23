@@ -1,6 +1,12 @@
 # personal-ai-trading-copilot
 
-Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.0）。
+Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.1，统一发布版本 `1.1`，Windows 本地运行）。
+
+V1.1 聚焦交易与数据一致性：批次 T+1、账户原子保存与跨进程保护、成交/决策记录幂等、统一账户估值/AI、补数退避恢复、回测成交与统计修正。新增运行状态和窄屏体验，修正后的引擎已离线重算真实行情样本，详见 `docs/V1.1-release-notes.md` 和 `docs/V1.1-research-report.md`。
+
+本版修正盘前默认空白、半成品历史日期、跨日结论混用、补数缓存延迟和指数缺失。网页默认展示最近覆盖充分的日线，可切换最近行情；模拟交易继续使用真实当前交易日。详见 `docs/V1.1-数据显示修复.md`。
+
+本版同时完成跨日订单恢复、AI查询与机会计划统一、数据状态和首装流程优化；提供锁定依赖、独立离线演示和带校验清单的源码发布包。发布说明见 `docs/V1.1-发布说明.md`，后续路线见 `docs/项目路线图.md`。开发期间的修复统一纳入 `1.1`，Git标签为 `v1.1`；下载附件及发布信息以[V1.1官方发布页](https://github.com/stevenrenOvO/personal-ai-trading-copilot/releases/tag/v1.1)为准。
 
 核心闭环：
 
@@ -11,8 +17,12 @@ A 股行情 → 市场状态 → 情绪周期 → 强势板块 → 个股机会 
 
 ## 快速开始
 
+已安装依赖时，双击 `start.cmd` 启动；双击 `stop.cmd` 停止。首次解压请先安装 Python（本次验证 Windows 64 位 Python 3.13，最低 3.11），双击 `setup.cmd` 安装锁定的35个运行依赖，再双击 `start-demo.cmd` 离线体验。演示使用8001端口、固定样例日期及独立 `data/demo/` 账户，页面明确标记测试数据；`stop-demo.cmd` 停止演示。
+
+真实模式使用8000端口；演示数据不迁入真实账户。首次初始化真实数据请参照下方命令，之后后台会补日线。源码包不附带用户账户、密钥和真实行情库。
+
 ```powershell
-# 1. 创建虚拟环境并安装依赖
+# 开发者安装：创建环境并安装运行+测试依赖
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
@@ -27,17 +37,25 @@ Copy-Item .env.example .env
 http://127.0.0.1:8000/
 ```
 
+手机验收时，将手机和电脑连接同一 Wi-Fi，先停止已有服务，再在项目目录运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.api.app --host 0.0.0.0 --port 8000
+```
+
+手机访问 `http://电脑的局域网IP:8000/`。此方式在终端前台运行，按 Ctrl+C 停止；默认一键启动仍使用本机地址。
+
 ## 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-没有 `TUSHARE_TOKEN` 时，真实数据测试会自动 SKIP，但离线 Fixture 测试始终运行。
+联网测试要求显式启用 `RUN_LIVE_DATA_TESTS=1` 并具备相应凭证。前端交互回归需要 Node.js；没有 Node 时这些交互测试会跳过。日常运行无需 Node。
 
 ## 主要接口
 
-- `/health`
+- `/health`（服务存活） `/ready`（账户、行情、历史和补数状态）
 - `/market/state` `/emotion/state` `/sectors`
 - `/opportunities` `/board/environment` `/risk`
 - `/positions` `/strategies` `/strategies/health`
@@ -45,6 +63,7 @@ http://127.0.0.1:8000/
 - `/profile` `/backtest/runs`（GET/POST） `/paper/trade`（POST）
 - `/ai/copilot` `/board/ladder` `/data/latest` `/data/history/dates`
 - `/opportunities/candidates` `/opportunities/setups` `/opportunities/plan`
+- `/data/ingest/status`
 
 > 早期骨架的 `/api/*` fixture 路由（`/api/backtest`、`/api/paper/snapshot`、`/api/profile`、
 > `/api/opportunity/scan`）已在 V1.0 收尾时下线，现返回 404；它们曾以 `tests/fixtures` 的
@@ -55,11 +74,21 @@ http://127.0.0.1:8000/
 - `TushareProvider`：需要 `.env` 中的 `TUSHARE_TOKEN`。
 - `BaoStockProvider`：免费、免 token，V1.1 默认数据源，提供 A 股历史日线 / 基础信息 / 行业 / 日历 / 复权因子（盘后数据，非实时）。
 - `AkShareProvider`：免费，作为补充/降级，依赖第三方公开接口，稳定性弱于 BaoStock。
-- `FallbackProvider`：按顺序自动降级（Tushare → 本地存储 → BaoStock → AkShare → Fixture）。
+- 生产启动优先选择本地全市场历史库，再选择已有 CSV；无本地数据时使用延迟连接的网络降级链（已配置的 Tushare → BaoStock → AkShare），不会自动使用 Fixture。
 - `FixtureProvider`：离线测试数据，位于 `tests/fixtures`，仅用于开发/测试，不作为生产真实数据。
+- 演示模式必须显式设置 `COPILOT_DEMO_MODE=1`，界面标记为测试样例。
 - 落地管线：`provider → raw → quality check → normalized → local storage`。
 
 ## 真实数据落地
+
+首次使用真实模式，可先初始化全市场证券名单和日历（日期区间按需要修改）：
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.data.ingest --universe all --start 20260701 --end 20261023 --metadata-only
+.\start.ps1
+```
+
+该命令需要真实数据源联网成功；之后在顶部查看后台日线补数进度。初次下载可能需要较长时间，先展示达到覆盖门槛的最新日期。失败会保留实际缺口并重试。需要直接落地整个全市场区间时，去掉 `--metadata-only`，结果也会保存到可恢复的历史库。
 
 ```powershell
 # 拉取 CSI300 成分股真实日线到本地 data/ 目录
@@ -67,6 +96,16 @@ http://127.0.0.1:8000/
 ```
 
 服务启动时若检测到本地已落地数据，会优先使用本地数据（快速离线），否则回退到免费网络数据源。
+
+## 构建发布包
+
+```powershell
+.\.venv\Scripts\python.exe scripts/build_release.py --smoke
+```
+
+输出源码 ZIP、SHA256和逐文件清单，详见 `docs/V1.1-发布流程.md`。构建不会推送Git或上传Release。本项目发布目标是个人本地工具；公网服务的身份验证、账户隔离和生产部署属于后续独立工作。
+
+模拟交易必须填写正价格与正整数数量。API 使用当前交易日并检查标的和涨跌停约束；当前日的验证数据缺失时会明确拒绝，历史重放请使用独立账户。账户仍使用兼容的 `data/paper/state.json`，新格式增加批次、幂等请求和可恢复成交事件，不能将新格式回写给旧服务。
 
 ## 目录结构
 

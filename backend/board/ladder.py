@@ -424,17 +424,20 @@ class LimitLadderEngine:
             )
 
         info = self._stock_info(basic)
-        sets = self._daily_sets(daily, present_days, codes, info, all_days)
-        heights_by_day = heights_from_sets(sets["limit_up"], present_days)
+        sets = self._daily_sets(daily, window, codes, info, all_days)
+        heights_by_day = heights_from_sets(sets["limit_up"], window)
         heights = heights_by_day.get(date, {})
 
         levels, gaps, highest = self._levels(date, heights, sets, info)
-        yesterday = self._yesterday_premium(present_days, sets, heights_by_day)
-        recent = self._recent_days(present_days, sets, heights_by_day)
+        yesterday = self._yesterday_premium(window, sets, heights_by_day)
+        recent = self._recent_days(window, sets, heights_by_day)
         industries = self._industries(date, heights, sets, info)
         dominant = self._dominant_industry(industries, highest)
 
         notes = []
+        missing_days = [day for day in window if day not in present_days]
+        if missing_days:
+            notes.append(f"窗口内缺少开市日日线（{'、'.join(missing_days)}），连板按缺失日中断，跨日溢价不可确认")
         new_listing_today = sets["new_listing"].get(date, set())
         corporate_today = sets["corporate_action"].get(date, set())
         stale_st = sets.get("stale_st_names") or set()
@@ -487,8 +490,8 @@ class LimitLadderEngine:
             broken_codes=tuple(sorted(sets["broken"].get(date, set()))),
             reseal_codes=tuple(sorted(sets["reseal"].get(date, set()))),
             prev_broken_codes=(
-                tuple(sorted(sets["broken"].get(present_days[-2], set())))
-                if len(present_days) >= 2
+                tuple(sorted(sets["broken"].get(window[-2], set())))
+                if len(window) >= 2
                 else ()
             ),
             recent=recent,
@@ -548,7 +551,7 @@ class LimitLadderEngine:
                     # Listed before the store window starts: definitely not new.
                     -10**6
                     if bisect_left(all_days, meta["list_date"]) == 0
-                    and str(meta["list_date"]) <= all_days[0]
+                    and str(meta["list_date"]) < all_days[0]
                     else bisect_left(all_days, meta["list_date"])
                 )
                 if len(str(meta.get("list_date") or "")) == 8
@@ -802,6 +805,8 @@ class LimitLadderEngine:
         heights_by_day: dict[str, dict[str, int]],
         previous_height_min: int = 0,
     ) -> Optional[YesterdayPremium]:
+        if yesterday not in sets["by_day"] or today not in sets["by_day"]:
+            return None
         y_limits = sets["limit_up"].get(yesterday, set())
         if not y_limits:
             return YesterdayPremium(date=yesterday, measured_on=today)
@@ -898,6 +903,8 @@ class LimitLadderEngine:
         """Per-day structure summaries for the whole window (trend context)."""
         summaries: list[LadderDay] = []
         for index, day in enumerate(days):
+            if day not in sets["by_day"]:
+                continue
             heights = heights_by_day.get(day, {})
             buckets = {
                 bucket: sum(1 for h in heights.values() if bucket_label(h) == bucket)

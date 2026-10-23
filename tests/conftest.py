@@ -10,7 +10,11 @@ from backend.data.config import clear_settings_cache, get_settings
 
 
 @pytest.fixture(autouse=True)
-def reset_settings():
+def reset_settings(tmp_path, monkeypatch):
+    # Default runtime construction must never open a user's real data directory
+    # or start production backfill jobs during an offline test.
+    monkeypatch.setenv("COPILOT_DB_PATH", str(tmp_path / "default-data" / "market.db"))
+    monkeypatch.setenv("COPILOT_DEMO_MODE", "1")
     clear_settings_cache()
     yield
     clear_settings_cache()

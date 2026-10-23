@@ -15,6 +15,7 @@ class Settings:
     tushare_token: str | None
     db_path: Path
     fixture_dir: Path
+    demo_mode: bool = False
 
     @property
     def has_tushare_token(self) -> bool:
@@ -37,6 +38,7 @@ def get_settings(env_path: Path | None = None) -> Settings:
         tushare_token=os.getenv("TUSHARE_TOKEN"),
         db_path=db_path,
         fixture_dir=fixture_dir,
+        demo_mode=os.getenv("COPILOT_DEMO_MODE", "0") == "1",
     )
 
 def clear_settings_cache() -> None:

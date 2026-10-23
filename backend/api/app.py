@@ -1,4 +1,4 @@
-"""Lightweight WSGI entry point for V1.0 (standard library only).
+"""Lightweight WSGI entry point for V1.1 (standard library only).
 
 It serves the dashboard page, the health check and the V1 API router
 (``backend.api.v1``, which holds every official endpoint). The early-skeleton
@@ -9,23 +9,36 @@ from ``tests/fixtures`` and had no place in a system that promises real data.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 from wsgiref.util import setup_testing_defaults
 
 from backend.api import v1
 from backend.api.runtime import Runtime
+from backend.api.readiness import version
 
 
 # The runtime is initialized lazily and shared by every request.
 _RUNTIME = None
+_RUNTIME_LOCK = threading.Lock()
+_RUNTIME_ERROR = False
 
 
 def _get_runtime():
-    global _RUNTIME
+    global _RUNTIME, _RUNTIME_ERROR
     if _RUNTIME is None:
-        _RUNTIME = Runtime.create()
+        with _RUNTIME_LOCK:
+            if _RUNTIME is None:
+                try:
+                    _RUNTIME = Runtime.create()
+                    _RUNTIME_ERROR = False
+                except Exception:
+                    _RUNTIME_ERROR = True
+                    logging.getLogger(__name__).exception("Runtime initialization failed")
+                    raise
     return _RUNTIME
 
 
@@ -38,7 +51,16 @@ def _json_response(status: str, payload: dict):
 
 
 def _handle_health(environ):
-    return _json_response("200 OK", {"status": "ok"})
+    from backend.api.readiness import version
+    from backend.data.config import get_settings
+    return _json_response("200 OK", {"status": "ok", "version": version(),
+        "mode": "demo" if get_settings().demo_mode else "production"})
+
+
+def _handle_ready(environ):
+    from backend.api.readiness import readiness
+    result = readiness(_RUNTIME, _RUNTIME_ERROR)
+    return _json_response("503 Service Unavailable" if result["status"] in ("starting", "error") else "200 OK", result)
 
 
 def _handle_dashboard(environ):
@@ -55,6 +77,7 @@ _ROUTES = [
     (re.compile(r"^/$"), _handle_dashboard),
     (re.compile(r"^/health$"), _handle_health),
     (re.compile(r"^/api/health$"), _handle_health),
+    (re.compile(r"^/ready$"), _handle_ready),
 ]
 
 
@@ -64,30 +87,33 @@ def application(environ, start_response):
     path = environ.get("PATH_INFO", "")
     method = environ.get("REQUEST_METHOD", "GET")
 
+    # A static page and liveness probe do not depend on vendors or account state.
+    for pattern, handler in _ROUTES:
+        if pattern.match(path):
+            if method not in ("GET", "HEAD"):
+                status, headers, body = _json_response("405 Method Not Allowed", {"status": "error", "detail": "Method not allowed"})
+                headers.append(("Allow", "GET, HEAD"))
+            else:
+                status, headers, body = handler(environ)
+            start_response(status, headers)
+            return [b"" if method == "HEAD" else body]
+
     try:
         body, handled = v1.dispatch(environ, start_response, _get_runtime())
         if handled:
             return [body]
     except Exception as exc:
+        logging.getLogger(__name__).exception("Request failed: %s", path)
         start_response(
             "500 Internal Server Error",
             [("Content-Type", "application/json; charset=utf-8")],
         )
         return [
             json.dumps(
-                {"status": "error", "detail": str(exc)}, ensure_ascii=False
+                {"status": "error", "detail": "服务暂时无法完成请求，请查看运行状态或稍后重试"}, ensure_ascii=False
             ).encode("utf-8")
         ]
 
-    for pattern, handler in _ROUTES:
-        if pattern.match(path):
-            # Only GET for most endpoints, but POST for profile
-            if method not in ("GET", "POST"):
-                start_response("405 Method Not Allowed", [("Content-Type", "application/json; charset=utf-8")])
-                return [json.dumps({"status": "error", "detail": "Method not allowed"}).encode("utf-8")]
-            status, headers, body = handler(environ)
-            start_response(status, headers)
-            return [body]
     start_response("404 Not Found", [("Content-Type", "application/json; charset=utf-8")])
     return [json.dumps({"status": "error", "detail": "Not found"}).encode("utf-8")]
 
@@ -96,6 +122,12 @@ def serve(host="127.0.0.1", port=8000):
     """Run the API server (for development)."""
     class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         daemon_threads = True
+
+    from backend.data.config import get_settings
+    demo = get_settings().demo_mode
+    if demo:
+        from backend.api.demo import configure_demo_services
+        configure_demo_services()
 
     def _start_quote_service():
         try:
@@ -114,11 +146,10 @@ def serve(host="127.0.0.1", port=8000):
         except Exception:
             pass
 
-    import threading
-
-    threading.Thread(target=_start_quote_service, daemon=True).start()
-    threading.Thread(target=_start_auto_ingest, daemon=True).start()
     with make_server(host, port, application, server_class=ThreadingWSGIServer) as httpd:
+        if not demo:
+            threading.Thread(target=_start_quote_service, daemon=True).start()
+        threading.Thread(target=_start_auto_ingest, daemon=True).start()
         print(f"Serving on http://{host}:{port}")
         httpd.serve_forever()
 

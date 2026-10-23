@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+  <html lang="zh">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -67,7 +67,7 @@
   .card-mobile { display:block; }
   details.card > summary { cursor:pointer; font-weight:600; }
   .pill.action { background:var(--panel2); border-radius:10px; padding:1px 8px; font-size:12px; }
-  .tier-A .big, .tier-A .pill { color:var(--ok); }
+  .tier-A .big, .tier-A .pill { color:var(--accent); }
   .tier-B .big { color:var(--warn); }
   .tier-C .big { color:var(--muted); }
   .form-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:6px 0; }
@@ -84,12 +84,47 @@
     .card { padding:10px; }
     .big { font-size:20px; }
     .metric .value { font-size:15px; }
-    table { display:none; }              /* 手机上不再用表格 */
+    table { display:block; overflow-x:auto; } /* 未提供卡片版的表格仍可阅读 */
     .mobile-cards { display:block !important; }
     .row { flex-wrap:wrap; }
     .row > span:last-child { text-align:right; }
   }
   .mobile-cards { display:none; }
+  button:disabled { opacity:.55; cursor:wait; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  .card, .metric, .section, .flex > *, .row > * { min-width:0; overflow-wrap:anywhere; }
+  .system-status { margin:12px 24px 0; padding:10px 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:12px; }
+  .system-status summary { cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .system-status summary::before { content:'▸'; color:var(--muted); }
+  .system-status[open] summary::before { content:'▾'; }
+  .system-details { margin-top:10px; }
+  .view-progress { margin-bottom:12px; color:var(--warn); font-size:12px; }
+  .view-progress:empty { display:none; }
+  .error-box { border-left:3px solid var(--danger); }
+  .empty-state { padding:12px 0; }
+  .trade-help { margin:8px 0; line-height:1.6; }
+  .request-result { display:block; overflow-wrap:anywhere; }
+  #review-positions .card, #review-trades .card { margin-top:8px; }
+  #date { max-width:100%; }
+  .date-context { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .date-context > span { flex:1 1 280px; }
+  .date-context button { font-size:12px; padding:5px 10px; }
+  @media (max-width:720px) {
+    header, nav { padding:12px; }
+    main { padding:16px 12px; }
+    header h1 { font-size:16px; }
+    header > .flex { margin-left:0 !important; width:100%; }
+    #date { flex:1; min-width:0; }
+    #net-status { flex-basis:100%; min-height:17px; }
+    .system-status { margin:12px 12px 0; }
+    #tabs { gap:4px; }
+    #tabs button, button, input, select { min-height:42px; }
+    input, select { font-size:16px; } /* 避免手机聚焦输入框时放大页面 */
+    .form-row label { flex-basis:64px; }
+    #backtest > .flex > * { flex:1 1 140px; width:100%; }
+    #ai-q { flex-basis:180px !important; width:100%; }
+    .metric { flex:1 1 130px; }
+  }
 </style>
 </head>
 <body>
@@ -99,14 +134,14 @@
       <div class="sub">个人 A 股交易决策辅助 · 数据来源可追溯 · 本地运行</div>
     </div>
     <div class="flex" style="margin-left:auto;">
-      <label class="muted">交易日</label>
+      <label class="muted" for="date">交易日</label>
       <select id="date" style="width:190px;"></select>
       <button id="refresh">刷新</button>
-      <span id="net-status" class="muted" style="font-size:12px;min-width:64px;"></span>
+      <span id="net-status" class="muted" role="status" aria-live="polite" style="font-size:12px;min-width:64px;"></span>
     </div>
   </header>
 
-  <nav id="tabs">
+  <nav id="tabs" aria-label="功能导航">
     <button data-tab="dashboard" class="active">总览</button>
     <button data-tab="market">市场</button>
     <button data-tab="opportunities">机会</button>
@@ -118,10 +153,18 @@
     <button data-tab="health">策略健康</button>
   </nav>
 
+  <details class="system-status" id="system-status">
+    <summary><strong id="system-label">正在检查服务…</strong><span class="muted" id="system-version"></span><span class="muted">查看数据准备情况</span></summary>
+    <div class="system-details" id="system-details" aria-live="polite">正在检查账户、历史数据和行情连接。</div>
+  </details>
+
   <main>
+    <div class="banner warn" id="demo-banner" hidden>演示模式 · 当前展示固定测试样例，价格与机会均非真实行情；账户与记录保存在独立演示目录。</div>
+    <div class="banner date-context" id="date-context"><span id="date-description" role="status" aria-live="polite">正在读取可用交易日…</span><button id="latest-complete" hidden>查看最近可分析日</button><button id="latest-snapshot" hidden>查看最近行情</button></div>
     <section id="dashboard" class="section active">
       <div class="grid">
-        <div class="card"><h3>今天能不能做？</h3><div id="d-can" class="big">—</div><div id="d-can-reason" class="muted"></div></div>
+        <div class="card" style="grid-column:1/-1;"><h3>所选交易日市场</h3><div id="d-market"><span class="muted">加载中…</span></div></div>
+        <div class="card"><h3>所选交易日能否进攻？</h3><div id="d-can" class="big">—</div><div id="d-can-reason" class="muted"></div></div>
         <div class="card"><h3>当前情绪周期</h3><div id="d-emotion" class="big">—</div><div id="d-emotion-reason" class="muted"></div></div>
         <div class="card"><h3>建议仓位</h3><div id="d-exposure" class="big">—</div></div>
         <div class="card"><h3>涨停环境</h3><div id="d-board" class="big">—</div><div id="d-board-reason" class="muted"></div></div>
@@ -154,16 +197,18 @@
     </section>
 
     <section id="review" class="section">
-      <div class="banner">复盘 / 审计：模拟盘、交易记录（决策日志）与交易审计共用同一份数据；样本不足时明确标注，不生成画像数据。</div>
+      <div class="banner">复盘 / 审计：模拟盘、交易记录（决策日志）与交易审计共用同一份数据。这里展示当前模拟账户，不随顶部历史日期回放；样本不足时明确标注。</div>
       <div class="grid" id="review-stats"></div>
       <div class="grid" id="review-account"></div>
+      <div class="card" style="margin-top:16px;"><h3>当前持仓</h3><div id="review-positions"></div></div>
       <div class="card" style="margin-top:16px;"><h3>① 模拟交易（写入模拟盘 + 决策日志）</h3>
         <div class="form-row"><label>代码</label><input id="pt-code" placeholder="000001.SZ"></div>
         <div class="form-row"><label>方向</label><select id="pt-action"><option value="BUY">买入</option><option value="SELL">卖出</option></select>
           <label>价格</label><input id="pt-price" placeholder="11.70"></div>
-        <div class="form-row"><label>数量</label><input id="pt-qty" placeholder="1000（100 股整手）">
+        <div class="form-row"><label>数量</label><input id="pt-qty" placeholder="1000（买入为 100 股整手）">
           <label>交易日</label><input id="pt-date" placeholder="20260917"></div>
-        <div class="form-row"><button id="pt-submit">提交模拟交易</button><span id="pt-result" class="muted"></span></div>
+        <div class="muted trade-help">模拟成交仅支持当前交易日。买入数量须为 100 股整数倍；卖出受持仓、T+1 和涨跌停检查约束。</div>
+        <div class="form-row"><button id="pt-submit">提交模拟交易</button><span id="pt-result" class="muted request-result" role="status"></span></div>
       </div>
       <div class="card" style="margin-top:16px;"><h3>② 决策记录（写入决策日志，不成交）</h3>
         <div class="form-row"><label>代码</label><input id="dj-code" placeholder="000001.SZ"></div>
@@ -172,9 +217,10 @@
           <option value="HOLD">持有</option><option value="WAIT">等待</option>
           <option value="MISSED_SIGNAL">错过信号</option></select>
           <label>价格</label><input id="dj-price" placeholder="11.70"></div>
+        <div class="form-row"><label>记录数量</label><input id="dj-qty" placeholder="可留空，不产生模拟成交"></div>
         <div class="form-row"><label>我的理由</label><input id="dj-reason" placeholder="为什么做/不做这一笔"></div>
         <div class="form-row"><label>交易日</label><input id="dj-date" placeholder="20260917">
-          <button id="dj-submit">提交决策记录</button><span id="dj-result" class="muted"></span></div>
+          <button id="dj-submit">提交决策记录</button><span id="dj-result" class="muted request-result" role="status"></span></div>
       </div>
       <div class="card" style="margin-top:16px;"><h3>③ 交易记录 / 决策日志</h3><div id="review-trades"></div></div>
       <div class="card" style="margin-top:16px;"><h3>④ 交易审计</h3><div id="review-audit"></div></div>
@@ -182,9 +228,9 @@
 
     <section id="backtest" class="section">
       <div class="flex" style="margin-bottom:12px;">
-        <input id="bt-start" placeholder="开始" value="20260701">
-        <input id="bt-end" placeholder="结束" value="20260909">
-        <select id="bt-strategy">
+        <input id="bt-start" placeholder="开始 YYYYMMDD" aria-label="回测开始日期">
+        <input id="bt-end" placeholder="结束 YYYYMMDD" aria-label="回测结束日期">
+        <select id="bt-strategy" aria-label="回测策略">
           <option value="strong_sector_breakout">强势板块突破</option>
           <option value="ma_cross">均线交叉（基准）</option>
         </select>
@@ -194,9 +240,9 @@
     </section>
 
     <section id="ai" class="section">
-      <div class="banner">AI 只基于系统真实数据回答；未配置 LLM Key 时给出结构化结果，不编造行情。</div>
+      <div class="banner">支持基于系统数据的结构化查询与简报，暂不支持开放式问答。</div>
       <div class="flex" style="margin-bottom:12px;">
-        <input id="ai-q" placeholder="例如：今天能不能做？最强板块？" style="flex:1;">
+        <input id="ai-q" placeholder="例如：今天能不能做？最强板块？" aria-label="结构化查询问题" style="flex:1;">
         <button id="ai-ask">询问</button>
       </div>
       <div id="ai-output" class="muted">点击「询问」或切换日期查看今日简报。</div>
@@ -211,7 +257,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const date = () => ($('date').value || '').replace(/-/g, '');
-    const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const pct = (x, d) => (x==null || x==='') ? null : (Number(x)*100).toFixed(d===undefined?1:d)+'%';
     const num = (x) => (x==null || x==='') ? null : Number(x).toLocaleString('zh-CN');
     const riskCls = (l) => l==='high'?'risk-high':(l==='low'?'risk-low':'risk-medium');
@@ -223,56 +269,99 @@
     const STATUS_ZH = {'production':'正式','experimental':'实验'};
     const actZh = (x) => ACTION_ZH[x] || x || '未接入';
     const riskZh = (x) => RISK_ZH[x] || x || '未接入';
-    const stratZh = (x) => STRATEGY_ZH[x] || x || '—';
+    const stratZh = (x) => esc(STRATEGY_ZH[x] || x || '—');
     const statusZh = (x) => STATUS_ZH[x] || x || '—';
 
-    // 全局「载入中」提示：并发请求计数，归零后短暂显示耗时，避免点完像没反应。
-    let _busy = 0, _busyMax = 0;
-    async function fetchBusy(path, options) {
-      _busy += 1;
-      const started = Date.now();
-      if (_busy === 1) { const el = $('net-status'); if (el) el.textContent = '载入中…'; }
+    let _busy = 0, _busyFailed = 0, _busyTotal = 0, _busyStarted = 0;
+    let currentSessionDay = '';
+    let dateAvailability = {}, latestDateInfo = {}, latestCompleteDate = '';
+    let automaticDate = '', manualDateChoice = false;
+    async function requestJson(path, options = {}, timeout = 25000, track = true) {
+      if (track) {
+        if (_busy++ === 0) { _busyFailed = 0; _busyTotal = 0; _busyStarted = Date.now(); }
+        _busyTotal++;
+        $('net-status').textContent = '载入中…';
+        $('net-status').className = 'muted';
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
       try {
-        return await fetch(path, options);
+        const resp = await fetch(path, {...options, signal:controller.signal});
+        const json = await resp.json().catch(() => null);
+        // /ready 的 503 仍携带可读的启动诊断。
+        const readiness = path === '/ready' && json && json.checks && json.version;
+        if ((!resp.ok || !json || json.status === 'error') && !readiness) {
+          if (track) _busyFailed++;
+          return {ok:false, uncertain:options.method === 'POST' && resp.ok && !json,
+            error:(json && json.detail) || `服务暂时无法完成请求（HTTP ${resp.status}），请稍后刷新`};
+        }
+        return {ok:true, data:json.data !== undefined ? json.data : json, meta:json.meta};
+      } catch (err) {
+        if (track) _busyFailed++;
+        return {ok:false, uncertain:options.method === 'POST', error:err.name === 'AbortError'
+          ? '请求超时，请稍后重试' : '无法连接本地服务，请确认服务已启动后刷新'};
       } finally {
-        _busy -= 1;
-        if (_busy === 0) {
-          const el = $('net-status');
-          if (el) {
-            const ms = Date.now() - started;
-            el.textContent = ms > 800 ? `已更新（${(ms / 1000).toFixed(1)} 秒）` : '已更新';
-            setTimeout(() => { if (_busy === 0 && el) el.textContent = ''; }, 2500);
-          }
+        clearTimeout(timer);
+        if (track && --_busy === 0) {
+          const ms = Date.now() - _busyStarted;
+          $('net-status').textContent = _busyFailed ? (_busyFailed === _busyTotal ? '数据加载失败，可点击刷新重试' : '部分请求失败，可点击刷新重试')
+            : (ms > 800 ? `已更新（${(ms / 1000).toFixed(1)} 秒）` : '已更新');
+          $('net-status').className = _busyFailed ? 'warn' : 'muted';
         }
       }
     }
+    const apiGet = (path, track = true) => requestJson(path, {}, 25000, track);
+    const apiPost = (path, body, timeout) => requestJson(path,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}, timeout);
 
-    async function apiGet(path) {
-      try {
-        const resp = await fetchBusy(path);
-        const json = await resp.json().catch(() => null);
-        if (!resp.ok || !json || json.status === 'error') {
-          return { ok: false, error: (json && json.detail) || ('HTTP ' + resp.status) };
-        }
-        return { ok: true, data: json.data !== undefined ? json.data : json, meta: json.meta };
-      } catch (err) {
-        return { ok: false, error: err.message || '网络错误' };
-      }
+    const errorBox = (msg) => `<div class="card error-box" role="alert"><span class="danger">数据获取失败：${esc(msg)}</span><div class="muted">请使用页面顶部的「刷新」重试。</div></div>`;
+    const loadEpoch = {};
+    function beginLoad(tab, d = null) {
+      const ticket = {tab, date:d, epoch:(loadEpoch[tab] || 0) + 1};
+      loadEpoch[tab] = ticket.epoch;
+      $(tab).setAttribute('aria-busy', 'true');
+      const status = $('loading-' + tab);
+      if (status) status.textContent = '正在加载' + (d ? ' ' + dateTextOf(d) : '') + '… 下方如有内容，为上次加载结果。';
+      return ticket;
     }
-    async function apiPost(path, body) {
-      try {
-        const resp = await fetchBusy(path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-        const json = await resp.json().catch(() => null);
-        if (!resp.ok || !json || json.status === 'error') {
-          return { ok: false, error: (json && json.detail) || ('HTTP ' + resp.status) };
-        }
-        return { ok: true, data: json.data };
-      } catch (err) {
-        return { ok: false, error: err.message || '网络错误' };
-      }
+    function isCurrentLoad(ticket) {
+      return loadEpoch[ticket.tab] === ticket.epoch && (ticket.date === null || ticket.date === date());
     }
-
-    const errorBox = (msg) => `<div class="card"><span class="danger">数据获取失败：${esc(msg)}</span></div>`;
+    function finishLoad(ticket) {
+      if (!isCurrentLoad(ticket)) return false;
+      $(ticket.tab).setAttribute('aria-busy', 'false');
+      const status = $('loading-' + ticket.tab);
+      if (status) status.textContent = '';
+      return true;
+    }
+    let systemRequest = null;
+    function loadSystemStatus() {
+      if (systemRequest) return systemRequest;
+      systemRequest = (async () => {
+        // 定时服务检查独立更新状态卡，保留当前页面的请求失败提示。
+        const r = await apiGet('/ready', false);
+        if (!r.ok) {
+          $('system-label').textContent = '服务连接异常';
+          $('system-label').className = 'danger';
+          $('system-details').innerHTML = errorBox(r.error);
+          return;
+        }
+        const state = r.data;
+        $('demo-banner').hidden = state.data_mode !== 'demo';
+        $('system-version').textContent = 'v' + state.version;
+        $('system-label').textContent = ({ready:'服务已就绪',degraded:'服务可用 · 部分数据待完善',starting:'服务启动中',error:'服务需要处理'})[state.status] || '状态待确认';
+        $('system-label').className = state.status === 'ready' ? 'ok' : state.status === 'error' ? 'danger' : 'warn';
+        const names = {account:'模拟账户',history:'历史数据',quotes:'行情快照',calendar:'交易日历',ingest:'后台补数',indexes:'指数日线'};
+        $('system-details').innerHTML = Object.entries(state.checks || {}).map(([key, value]) => {
+          const check = typeof value === 'object' && value !== null ? value : {message:String(value)};
+          const progress = check.progress || {};
+          const detail = key === 'ingest' && progress.total > 0
+            ? `；本轮已检查 ${progress.processed || 0}/${progress.total} 个代码，已更新 ${progress.downloaded || 0}，失败待重试 ${progress.failed || 0}` : '';
+          return `<div class="kv"><span class="k">${esc(names[key] || key)}</span><span class="v ${check.status === 'ok' ? 'ok' : check.status === 'error' ? 'danger' : 'warn'}">${esc((check.message || check.status || '待确认') + detail)}</span></div>`;
+        }).join('') + '<div class="muted trade-help">服务可用不代表具备交易条件；交易判断以所选日期的数据和机会计划为准。数据准备状态每 30 秒更新，也可点击顶部「刷新」。</div>';
+      })().finally(() => { systemRequest = null; });
+      return systemRequest;
+    }
     // 一行式「数据时鲜」提示：用人话说清这是哪天的数据、多久前更新的、可不可信。
     const SOURCE_ZH = { tencent: '腾讯', sina: '新浪', local_history: '本地历史库', test: '测试源' };
     const PHASE_ZH = { '盘前': '盘前', '集合竞价': '集合竞价', '开盘前': '开盘前', '盘中': '盘中',
@@ -288,9 +377,37 @@
       const key = dateKey(value);
       return key ? `${key.slice(0, 4)}-${key.slice(4, 6)}-${key.slice(6, 8)}` : '';
     }
+    function responseDay(result) {
+      const meta = result && result.meta || {};
+      return dateKey(meta.quote_date || meta.as_of || (result && result.data && result.data.date));
+    }
+    function confirmedFor(result, d) {
+      const meta = result && result.meta || {};
+      const basis = responseDay(result);
+      return !!(result && result.ok && !['warming','no_data','error'].includes(meta.status)
+        && (!basis || basis === d));
+    }
+    function missingDayText(result, d) {
+      const basis = responseDay(result);
+      return basis && basis !== d ? `所选日结构未确认；最近确认日 ${dateTextOf(basis)}`
+        : '所选日结构待补齐，请查看最近可分析日';
+    }
+    function updateDateContext() {
+      const d = date(), entry = dateAvailability[d] || {};
+      const parts = [`当前交易日 ${dateTextOf(currentSessionDay) || '待确认'}${latestDateInfo.phase ? ' · ' + latestDateInfo.phase : ''}`];
+      if (d) {
+        const coverage = Number.isFinite(entry.coverage_ratio) ? ` · 覆盖 ${(entry.coverage_ratio * 100).toFixed(1)}%` : '';
+        const kind = entry.complete === true ? `日线可分析${coverage}${entry.coverage_ratio < 1 ? ' · 仍有少量缺失' : ''}` : entry.has_snapshot ? `行情快照可用，日线结构待补齐${coverage}` : `数据状态待确认${coverage}`;
+        parts.push(`正在查看 ${dateTextOf(d)}（${kind}${d !== currentSessionDay ? ' · 历史复盘' : ''}）`);
+      }
+      if (latestDateInfo.display_reason && d === latestDateInfo.date) parts.push(latestDateInfo.display_reason);
+      $('date-description').textContent = parts.join('；');
+      $('latest-complete').hidden = !latestCompleteDate || d === latestCompleteDate;
+      $('latest-snapshot').hidden = !latestDateInfo.snapshot_date || d === latestDateInfo.snapshot_date;
+    }
     function freshness(meta) {
       if (!meta) return '';
-      const asOf = dateKey(meta.as_of);
+      const asOf = dateKey(meta.quote_date || meta.as_of);
       const selected = ($('date').value || '').slice(0, 8);
       const phase = PHASE_ZH[meta.session_phase] || meta.session_phase || '';
       const isHistory = meta.kind === 'historical' || meta.kind === 'historical_scan';
@@ -304,8 +421,12 @@
       else if (meta.status === 'no_data') { label = '该交易日未采集'; cls = 'warn'; }
       else if (meta.status === 'final') { label = '当日收盘数据'; cls = 'ok'; }
       else if (meta.is_stale) { label = '数据可能过期'; cls = 'warn'; }
+      if (!isHistory && asOf && selected && asOf !== selected && meta.status !== 'error') {
+        label = '所选日期行情未确认'; cls = 'warn';
+      }
 
       const parts = [];
+      if (meta.is_fixture) parts.push('测试样例 · 非真实行情');
       if (isHistory) {
         parts.push(`${dateTextOf(meta.as_of) || '历史'} 日线`);
       } else {
@@ -314,7 +435,7 @@
         const isToday = asOf && selected && asOf === selected;
         parts.push(
           (closed || !isToday)
-            ? `${dateTextOf(meta.as_of) || '最近交易日'} 收盘快照（延迟）`
+            ? `${dateTextOf(meta.quote_date || meta.as_of) || '最近交易日'} 行情快照（延迟）`
             : '最新快照（延迟）'
         );
         if (hhmm) parts.push(hhmm);
@@ -340,112 +461,151 @@
     }
 
     document.querySelectorAll('#tabs button').forEach(btn => {
+      btn.setAttribute('aria-controls', btn.dataset.tab);
       btn.onclick = () => {
-        document.querySelectorAll('#tabs button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#tabs button').forEach(b => { b.classList.remove('active'); b.removeAttribute('aria-current'); });
         document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
         btn.classList.add('active');
+        btn.setAttribute('aria-current', 'page');
         document.getElementById(btn.dataset.tab).classList.add('active');
         loadTab(btn.dataset.tab);
       };
     });
+    document.querySelectorAll('.section').forEach(section => {
+      const status = document.createElement('div');
+      status.id = 'loading-' + section.id;
+      status.className = 'view-progress';
+      status.setAttribute('role', 'status');
+      section.prepend(status);
+    });
+    document.querySelectorAll('.form-row label').forEach(label => {
+      const control = label.nextElementSibling;
+      if (control && control.id && ['INPUT', 'SELECT'].includes(control.tagName)) label.htmlFor = control.id;
+    });
+    ['pt-price','dj-price'].forEach(id => { $(id).inputMode = 'decimal'; });
+    ['pt-qty','dj-qty','pt-date','dj-date','bt-start','bt-end'].forEach(id => { $(id).inputMode = 'numeric'; });
 
     function loadTab(tab) {
       const d = date();
-      if (tab === 'dashboard') loadDashboard(d);
-      else if (tab === 'market') loadMarket(d);
-      else if (tab === 'opportunities') loadOpps(d);
-      else if (tab === 'board') loadBoard(d);
-      else if (tab === 'review') loadReview();
-      else if (tab === 'backtest') loadBacktestRuns();
-      else if (tab === 'ai') loadBriefing(d);
-      else if (tab === 'health') loadHealth();
+      if (!d && ['dashboard','market','opportunities','board','ai'].includes(tab)) {
+        const status = $('loading-' + tab);
+        if (status) status.innerHTML = errorBox('交易日尚未准备好');
+        return;
+      }
+      if (tab === 'dashboard') return loadDashboard(d);
+      else if (tab === 'market') return loadMarket(d);
+      else if (tab === 'opportunities') return loadOpps(d);
+      else if (tab === 'board') return loadBoard(d);
+      else if (tab === 'review') return loadReview();
+      else if (tab === 'backtest') return loadBacktestRuns();
+      else if (tab === 'ai') return loadBriefing(d);
+      else if (tab === 'health') return loadHealth();
     }
 
     async function loadDashboard(d) {
+      const ticket = beginLoad('dashboard', d);
       const [m, e, s, o, b] = await Promise.all([
         apiGet(`/market/state?date=${d}`), apiGet(`/emotion/state?date=${d}`),
         apiGet(`/sectors?date=${d}`), apiGet(`/opportunities/plan?date=${d}`), apiGet(`/board/environment?date=${d}`)
       ]);
+      if (!finishLoad(ticket)) return;
       const failures = [m, e, s, o, b].filter(r => !r.ok).map(r => r.error);
-      $('d-error').innerHTML = (failures.length ? errorBox(failures[0]) : '') + freshness(m.ok ? m.meta : null);
+      const historicalOnly = !confirmedFor(o, d);
+      $('d-error').innerHTML = (failures.length ? errorBox(failures[0]) : '') + freshness(m.ok ? m.meta : null)
+        + (historicalOnly ? `<div class="fresh warn">${esc((o.meta || {}).error || missingDayText(o, d))}</div>` : '');
 
       const market = m.ok ? m.data : {};
       const emotion = e.ok ? e.data : {};
-      const sectors = s.ok ? s.data : [];
+      const sectors = confirmedFor(s, d) && Array.isArray(s.data) ? s.data : [];
       const opps = o.ok ? o.data : [];
       const board = b.ok ? b.data : {};
+      const marketConfirmed = confirmedFor(m, d)
+        && !['数据不足','数据准备中','当日数据准备中'].includes(market.state);
+      $('d-market').innerHTML = marketConfirmed
+        ? `<div class="flex">${metric('市场状态', market.state)}${metric('全市场', market.total_count != null ? num(market.total_count) + ' 只' : null)}${metric('上涨 / 下跌', [market.advance_count,market.decline_count].map(x => x == null ? '—' : num(x)).join(' / '))}${metric('涨停 / 跌停', [market.limit_up_count,market.limit_down_count].map(x => x == null ? '—' : num(x)).join(' / '))}</div>`
+        : empty(m.ok ? '所选日行情尚未确认，请查看最近行情或最近可分析日。' : '行情数据获取失败，请刷新重试。');
 
       // 「今天能不能做」必须与机会页同源：用 Step 3 阶段 + Step 4 计划结论，
       // 不再用市场综合评分阈值（旧口径），否则会出现总览说能做、机会页说无机会。
       const planData = o.ok ? (o.data || {}) : null;
       const stage = (planData && planData.stage) || emotion.emotion_cycle || '—';
-      const can = !!(planData && planData.can_attack);
-      $('d-can').textContent = o.ok ? (can ? '可以做（有上限）' : '不做 / 观望') : '—';
+      const can = !!(planData && planData.can_attack && !historicalOnly);
+      $('d-can').textContent = !o.ok ? '获取失败' : historicalOnly ? '所选日结构待确认' : (can ? '可以做（有上限）' : '不做 / 观望');
       $('d-can').className = 'big ' + (o.ok ? (can ? 'ok' : 'danger') : '');
-      $('d-can-reason').textContent = planData
+      $('d-can-reason').textContent = historicalOnly ? missingDayText(o, d) : planData
         ? `情绪阶段「${stage}」· ${planData.attack_note || ''}`
         : (m.ok ? `市场 ${market.state || '—'}（${market.score} 分），机会数据不可用` : '数据不可用');
-      $('d-emotion').textContent = e.ok ? (emotion.emotion_cycle || '—') : '—';
-      $('d-emotion-reason').textContent = (emotion.factors || []).join('；');
+      const emotionConfirmed = confirmedFor(e, d);
+      $('d-emotion').textContent = emotionConfirmed ? (emotion.emotion_cycle || '—') : '待确认';
+      $('d-emotion-reason').textContent = emotionConfirmed ? (emotion.factors || []).join('；') : missingDayText(e, d);
       const exposure = (planData && planData.total_exposure_cap != null)
         ? planData.total_exposure_cap
         : emotion.recommended_exposure;
-      $('d-exposure').textContent = exposure != null ? pct(exposure, 0) : '—';
-      $('d-board').textContent = b.ok ? `${board.grade || '—'} 级` : '—';
-      $('d-board-reason').textContent = (board.factors || []).join('；');
+      $('d-exposure').textContent = historicalOnly ? '等待确认' : exposure != null ? pct(exposure, 0) : '—';
+      const boardConfirmed = confirmedFor(b, d);
+      $('d-board').textContent = boardConfirmed ? `${board.grade || '—'} 级` : '待确认';
+      $('d-board-reason').textContent = boardConfirmed ? (board.factors || []).join('；') : missingDayText(b, d);
       $('d-sectors').innerHTML = sectors.length
         ? sectors.slice(0,3).map(x => `<div class="row"><span>${esc(x.name)}</span><span class="tag">${x.score}</span><span class="muted">核心 ${esc(x.leader_name || x.leader || '未接入')}</span></div>`).join('')
-        : empty(s.ok ? '今日无板块数据' : '板块数据不可用');
+        : empty(!s.ok ? '板块数据获取失败' : !confirmedFor(s, d) ? missingDayText(s, d) : '所选日未产生板块结果');
       // 总览的"值得关注的机会"同样走 Step 4 链路（A 级优先，其次 B 级）。
       const plan = (o.ok && o.data) ? o.data : null;
-      const plans = plan ? (plan.plans || []).filter(p => p.tier !== 'C').slice(0, 3) : [];
+      const plans = plan && !historicalOnly ? (plan.plans || []).filter(p => p.tier !== 'C').slice(0, 3) : [];
       $('d-opps').innerHTML = !plan
         ? empty('机会数据不可用')
         : (plans.length
           ? `<div class="row"><span class="muted">A/B/C ${(plan.tier_counts||{}).A||0}/${(plan.tier_counts||{}).B||0}/${(plan.tier_counts||{}).C||0} · ${esc(plan.attack_note || '')}</span></div>`
             + plans.map(p => `<div class="row"><span>${esc(p.name || p.ts_code)}</span><span class="tag">${esc(p.tier)}级</span><span>${p.score}</span><span class="muted">${esc(p.opportunity_type)} · ${esc(p.state)}</span></div>`).join('')
-          : empty(plan.attack_note || '今日无高质量机会，建议等待'));
+          : empty(historicalOnly ? '请选择已有数据的交易日查看历史机会' : plan.attack_note || '今日无高质量机会，建议等待'));
     }
 
     async function loadMarket(d) {
+      const ticket = beginLoad('market', d);
       const [r, er] = await Promise.all([
         apiGet(`/market/state?date=${d}`),
         apiGet(`/emotion/state?date=${d}`)
       ]);
+      if (!finishLoad(ticket)) return;
       loadEmotionDetail(er, d);
       if (!r.ok) { $('market-grid').innerHTML = errorBox(r.error); $('market-factors').innerHTML = ''; $('market-scope').textContent = ''; return; }
       const m = r.data;
-      $('market-scope').innerHTML = m.state === '数据不足'
-        ? `${freshness(r.meta)}<b>该交易日没有数据</b>：请在上方换一个有数据的交易日（下拉里只列出已有数据的日期）。`
-        : `${freshness(r.meta)}数据范围：全市场 ${m.total_count ?? '—'} 只。成交额显示「未接入」表示该交易日的数据源未提供成交额，系统不做推测。`;
+      const pending = ['数据不足','数据准备中','当日数据准备中'].includes(m.state)
+        || !confirmedFor(r, d)
+        || (m.total_count != null && m.total_count <= 0);
+      const countGroup = values => values.map(value => pending || value == null ? '待确认' : num(value)).join('/');
+      $('market-scope').innerHTML = pending
+        ? `${freshness(r.meta)}<b>该交易日数据待确认</b>：评分和仓位建议将在数据确认后展示。可选择其他历史交易日，或展开顶部数据准备情况查看补数进度。`
+        : `${freshness(r.meta)}数据范围：全市场 ${m.total_count ?? '—'} 只。市场参考仓位仅描述盘面强弱，执行仓位上限以「机会」页计划为准。成交额未接入时不做推测。`;
       $('market-grid').innerHTML = [
-        ['状态', m.state, m.state==='数据不足'?'danger':'ok'],
-        ['评分', m.score, ''],
-        ['上涨/下跌/平盘', `${m.advance_count}/${m.decline_count}/${m.flat_count}`, ''],
-        ['涨停/跌停', `${m.limit_up_count}/${m.limit_down_count}`, ''],
+        ['状态', m.state, pending?'warn':'ok'],
+        ['评分', pending ? '待确认' : m.score, ''],
+        ['上涨/下跌/平盘', countGroup([m.advance_count, m.decline_count, m.flat_count]), ''],
+        ['涨停/跌停', countGroup([m.limit_up_count, m.limit_down_count]), ''],
         ['炸板', m.broken_count, ''],
         ['涨停封板率', pct(m.limit_up_success_rate, 0), ''],
         ['成交额', num(m.total_amount), ''],
         ['市场广度', pct(m.breadth, 1), ''],
-        ['建议仓位', pct(m.recommended_exposure, 0), ''],
-        ['置信度', pct(m.confidence, 0), ''],
+        ['市场参考仓位', pending ? '待确认' : pct(m.recommended_exposure, 0), ''],
+        ['置信度', pending ? '待确认' : pct(m.confidence, 0), ''],
         ['最高连板', m.max_consecutive_up, ''],
         ['昨日涨停溢价', m.yesterday_limit_up_performance != null ? pct(m.yesterday_limit_up_performance/100, 2) : null, ''],
         ['三大指数均值', m.index_pct != null ? pct(m.index_pct/100, 2) : null, '']
-      ].map(([k,v,c]) => metric(k, v, c)).join('');
+      ].map(([k,v,c]) => metric(k, pending && !['状态','上涨/下跌/平盘','涨停/跌停'].includes(k) ? '待确认' : v, c)).join('');
       $('market-factors').innerHTML = (m.factors||[]).length
         ? m.factors.map(f => `<div class="row"><span>${esc(f.description || f.name)}</span><span class="muted">${esc(f.value)}</span></div>`).join('')
         : empty('无因子');
     }
 
     async function loadOpps(d) {
+      const ticket = beginLoad('opportunities', d);
       // Step 4 chain only: the 20-day breakout baseline is no longer the main
       // opportunity source (it stays available at /opportunities for reference).
       const r = await apiGet(`/opportunities/plan?date=${d}`);
+      if (!finishLoad(ticket)) return;
       if (!r.ok) { $('opps-grid').innerHTML = errorBox(r.error); $('opps-scope').textContent = ''; return; }
-      if (r.meta && r.meta.status === 'no_data') {
-        $('opps-scope').innerHTML = freshness(r.meta) + `<b>${esc(r.meta.error || '该交易日暂无本地数据')}</b>`;
-        $('opps-grid').innerHTML = empty('请选择已有数据的交易日');
+      if (!confirmedFor(r, d)) {
+        $('opps-scope').innerHTML = freshness(r.meta) + `<b>${esc((r.meta || {}).error || missingDayText(r, d))}</b>`;
+        $('opps-grid').innerHTML = empty('日线结构尚未补齐。点击顶部「查看最近可分析日」可查看已经确认的机会计划。');
         return;
       }
       renderPlan(r);
@@ -459,8 +619,8 @@
         (tierOf(a) - tierOf(b)) || (a.rank - b.rank));
       const head = `
         <div class="kv"><span class="k">情绪阶段</span><span class="v"><b>${esc(plan.stage || '—')}</b>（确认日 ${esc((r.meta && r.meta.as_of) || plan.date || '—')}）</span></div>
-        <div class="kv"><span class="k">今天能不能进攻</span><span class="v ${plan.can_attack ? 'ok' : 'danger'}">${plan.can_attack ? '可以，但有上限' : '不建议进攻'}</span></div>
-        <div class="kv"><span class="k">今日高质量机会</span><span class="v">${plan.high_quality_count ?? 0} 个</span></div>
+        <div class="kv"><span class="k">所选交易日能否进攻</span><span class="v ${plan.can_attack ? 'ok' : 'danger'}">${plan.can_attack ? '可以，但有上限' : '不建议进攻'}</span></div>
+        <div class="kv"><span class="k">所选日高质量机会</span><span class="v">${plan.high_quality_count ?? 0} 个</span></div>
         <div class="kv"><span class="k">建议最多新开</span><span class="v">${plan.max_new_positions ?? 0} 只</span></div>
         <div class="kv"><span class="k">建议总仓位上限</span><span class="v">${pct(plan.total_exposure_cap, 0) || '—'}</span></div>
         <div class="kv"><span class="k">A / B / C</span><span class="v">${(plan.tier_counts && plan.tier_counts.A) || 0} / ${(plan.tier_counts && plan.tier_counts.B) || 0} / ${(plan.tier_counts && plan.tier_counts.C) || 0}</span></div>
@@ -511,16 +671,22 @@
     }
 
     async function loadBoard(d) {
+      const ticket = beginLoad('board', d);
       const [r, lr] = await Promise.all([
         apiGet(`/board/environment?date=${d}`),
         apiGet(`/board/ladder?date=${d}`)
       ]);
+      if (!finishLoad(ticket)) return;
       loadLadder(lr, d);
       if (!r.ok) { $('board-grid').innerHTML = errorBox(r.error); $('board-scope').textContent = ''; return; }
       const b = r.data;
       $('board-scope').innerHTML = freshness(r.meta)
         + '涨停/炸板为当日全市场数据；「回封」为日线口径（当日曾跌破涨停价、收盘收于涨停价），并非盘中打开后重新封板；封单量与涨停时间未接入。'
         + (b.ladder_note ? `<br>${esc(b.ladder_note)}` : '');
+      if (!confirmedFor(r, d)) {
+        $('board-grid').innerHTML = empty(missingDayText(r, d));
+        return;
+      }
       $('board-grid').innerHTML = [
         ['环境评级', b.grade, ''],
         ['评分', b.score, ''],
@@ -545,6 +711,10 @@
       if (!el) return;
       if (!r.ok) { el.innerHTML = errorBox(r.error); return; }
       const e = r.data || {};
+      if (!confirmedFor(r, d)) {
+        el.innerHTML = `<div class="row"><span class="warn">${esc(missingDayText(r, d))}</span></div>`;
+        return;
+      }
       if (e.emotion_cycle === '数据不足') {
         el.innerHTML = `<div class="row"><span class="danger">数据不足，不强行判断阶段</span>
           <span class="muted">${(e.unavailable || []).map(esc).join('；') || esc((r.meta && r.meta.error) || '')}</span></div>`;
@@ -572,12 +742,17 @@
         <div class="row"><span class="muted">口径</span><span class="muted">阶段由真实市场结构（连板高度/梯队/晋级率/溢价/炸板率/广度）按规则表判定，不使用单一综合评分；仅为市场判断，不含个股买入建议。</span></div>`;
     }
 
-    function loadLadder(r) {
+    function loadLadder(r, d) {
       const put = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
       ['ladder-levels', 'ladder-premium', 'ladder-industries'].forEach(id => put(id, ''));
       const setScope = (html) => { const el = $('ladder-scope'); if (el) el.innerHTML = html; };
       if (!r.ok) { put('ladder-structure', errorBox(r.error)); setScope(''); return; }
       const L = r.data || {};
+      if (d && !confirmedFor(r, d)) {
+        put('ladder-structure', `<span class="warn">${esc(missingDayText(r, d))}</span>`);
+        setScope(freshness(r.meta));
+        return;
+      }
       if (!L.available) {
         put('ladder-structure', `<span class="danger">${esc((r.meta && r.meta.error) || '该交易日无本地数据')}</span>`);
         setScope('');
@@ -638,25 +813,42 @@
     }
 
     async function loadReview() {
+      const ticket = beginLoad('review');
       const [tradesR, profileR, posR] = await Promise.all([
         apiGet('/trades'), apiGet('/profile'), apiGet('/positions')
       ]);
+      if (!isCurrentLoad(ticket)) return;
       const trades = tradesR.ok ? (tradesR.data || []) : [];
 
       $('review-account').innerHTML = posR.ok
-        ? [['现金', num(posR.data.cash)], ['持仓市值/权益', num(posR.data.equity)],
-           ['持仓数量', (Object.keys(posR.data.positions || {})).length],
+        ? [['可用现金', num(posR.data.cash)], ['账户总权益', num(posR.data.equity)],
+           ['持仓市值', num(posR.data.equity - posR.data.cash)],
+           ['持仓股票数', Object.values(posR.data.positions || {}).filter(p => p.quantity > 0).length],
            ['已实现盈亏', num(posR.data.realized_pnl)]]
           .map(([k, v]) => metric(k, v)).join('')
         : errorBox(posR.error);
+      if (posR.ok) {
+        const valuation = posR.data.valuation || {};
+        if ((valuation.missing_codes || []).length) $('review-account').innerHTML += '<div class="warn">部分持仓无可用报价，暂按成本估值</div>';
+        if ((valuation.older_price_codes || []).length) $('review-account').innerHTML += '<div class="warn">部分持仓使用最近可用历史收盘价</div>';
+        if (posR.data.journal_pending) $('review-account').innerHTML += '<div class="warn">成交已保存，复盘日志待恢复</div>';
+        const positions = Object.values(posR.data.positions || {}).filter(p => p.quantity > 0);
+        $('review-positions').innerHTML = positions.map(p => {
+          const price = valuation.prices && valuation.prices[p.ts_code];
+          const sellable = (p.buy_lots || []).filter(lot => currentSessionDay && lot.date < currentSessionDay).reduce((sum,lot) => sum + Number(lot.quantity), 0);
+          return `<div class="card"><h3>${esc(p.ts_code)}</h3><div class="kv"><span class="k">数量 / 当日可卖</span><span class="v">${num(p.quantity)} / ${currentSessionDay ? num(sellable) : '待交易日确认'} 股</span></div><div class="kv"><span class="k">含费成本 / 估值价</span><span class="v">${Number(p.avg_price).toFixed(3)} / ${price == null ? '按成本估值' : Number(price).toFixed(3)}</span></div></div>`;
+        }).join('') || empty('暂无持仓，模拟成交后将在这里显示数量与 T+1 可卖数量');
+      } else {
+        $('review-positions').innerHTML = errorBox(posR.error);
+      }
 
       if (profileR.ok) {
         const s = profileR.data.stats || {};
         $('review-stats').innerHTML = [
-          ['总交易数', s.total_trades],
-          ['胜率', s.win_rate != null ? pct(s.win_rate, 1) : null],
-          ['盈亏比', s.payoff_ratio],
-          ['最大回撤', s.max_drawdown != null ? pct(s.max_drawdown, 1) : null],
+          ['已平仓交易数', s.total_trades],
+          ['胜率', s.total_trades && s.win_rate != null ? pct(s.win_rate, 1) : '样本不足'],
+          ['利润因子', s.total_trades ? s.profit_factor : '样本不足'],
+          ['已平仓收益序列回撤', s.max_drawdown != null ? pct(s.max_drawdown, 1) : null],
           ['连续亏损', s.max_consecutive_losses],
           ['样本是否充足', s.sample_sufficient ? '是' : '样本不足']
         ].map(([k,v]) => metric(k, v)).join('');
@@ -672,30 +864,45 @@
             <div class="card">
               <h3>${esc(t.ts_code)} <span class="pill">${esc(t.action)}</span>
                 <span class="pill">${stratZh(t.strategy_id)}</span></h3>
-              <div class="kv"><span class="k">时间</span><span class="v">${esc(t.timestamp)}</span></div>
+              <div class="kv"><span class="k">交易日 / 记录时间</span><span class="v">${esc(dateTextOf(t.trade_date) || '未记录')} / ${esc(t.timestamp)}</span></div>
               <div class="kv"><span class="k">价格 / 数量</span><span class="v">${esc(t.price)} × ${esc(t.quantity)}</span></div>
               <div class="kv"><span class="k">系统建议</span><span class="v">${esc(t.system_recommendation || '—')} · ${esc(t.emotion_state || '—')}</span></div>
               <div class="kv"><span class="k">我的理由</span><span class="v">${esc(t.user_reason || '—')}</span></div>
             </div>`).join('')
           : empty('暂无交易记录'));
 
-      if (!trades.length) { $('review-audit').innerHTML = empty('暂无交易可审计'); return; }
+      if (!tradesR.ok) { $('review-audit').innerHTML = errorBox(tradesR.error); finishLoad(ticket); return; }
+      if (!trades.length) { $('review-audit').innerHTML = empty('暂无交易可审计'); finishLoad(ticket); return; }
       const summary = {};
       const details = [];
-      for (const t of trades) {
-        const ar = await apiGet(`/trades/${t.trade_id}/audit`);
-        if (!ar.ok) continue;
-        for (const f of (ar.data.findings || [])) summary[f.error_type] = (summary[f.error_type] || 0) + 1;
-        if ((ar.data.findings || []).length) details.push({ ts_code: t.ts_code, findings: ar.data.findings });
+      // 与可见的最近 50 条记录保持一致；最多 4 个并发，避免积累数千次串行请求。
+      const recent = trades.slice(-50).reverse();
+      let auditFailed = 0;
+      $('review-audit').innerHTML = empty(`正在审计最近 ${recent.length} 条记录…`);
+      for (let i = 0; i < recent.length; i += 4) {
+        if (!isCurrentLoad(ticket)) return;
+        const batch = recent.slice(i, i + 4);
+        const results = await Promise.all(batch.map(t => apiGet(`/trades/${encodeURIComponent(t.trade_id)}/audit`)));
+        for (let j = 0; j < results.length; j++) {
+          const ar = results[j];
+          if (!ar.ok) { auditFailed++; continue; }
+          for (const f of (ar.data.findings || [])) summary[f.error_type] = (summary[f.error_type] || 0) + 1;
+          if ((ar.data.findings || []).length) details.push({ ts_code:batch[j].ts_code, findings:ar.data.findings });
+        }
       }
+      if (!finishLoad(ticket)) return;
       const entries = Object.entries(summary);
       $('review-audit').innerHTML = `
-        ${entries.length ? entries.map(([k,v]) => `<div class="row"><span>${esc(k)}</span><span class="danger">${v} 次</span></div>`).join('') : '<span class="ok">未发现问题</span>'}
+        <div class="muted">审计范围：最近 ${recent.length} 条记录，共 ${trades.length} 条。</div>
+        ${auditFailed ? `<div class="warn">${auditFailed} 条审计未完成，请刷新重试；不能据此判断没有问题。</div>` : ''}
+        ${entries.length ? entries.map(([k,v]) => `<div class="row"><span>${esc(k)}</span><span class="danger">${v} 次</span></div>`).join('') : (!auditFailed ? '<span class="ok">本次审计范围内未发现问题</span>' : '')}
         ${details.slice(0,20).map(d => `<div class="row"><span>${esc(d.ts_code)}</span><span class="muted">${d.findings.map(f => esc(f.evidence)).join('；')}</span></div>`).join('')}`;
     }
 
     async function loadBacktestRuns() {
+      const ticket = beginLoad('backtest');
       const r = await apiGet('/backtest/runs');
+      if (!finishLoad(ticket)) return;
       if (!r.ok) { $('bt-output').innerHTML = errorBox(r.error); return; }
       const runs = r.data || [];
       $('bt-output').innerHTML = runs.length
@@ -708,119 +915,347 @@
     }
 
     async function loadHealth() {
+      const ticket = beginLoad('health');
       const r = await apiGet('/strategies/health');
+      if (!finishLoad(ticket)) return;
       if (!r.ok) { $('health-table').innerHTML = errorBox(r.error); return; }
       const list = r.data || [];
       $('health-table').innerHTML = list.length
-        ? list.map(h => `
+        ? list.map(h => {
+            const samples = Math.max((h.recent_20_trades || []).length, (h.recent_50_trades || []).length);
+            return `
             <div class="card">
               <h3>${stratZh(h.strategy_id)} <span class="pill">${esc(statusZh(h.status))}</span>
                 <span class="pill">${h.enabled ? '已启用' : '已禁用'}</span></h3>
               <div class="kv"><span class="k">版本</span><span class="v">${esc(h.version)}</span></div>
               <div class="kv"><span class="k">每日信号数</span><span class="v">${h.daily_signal_count ?? 0}</span></div>
-              <div class="kv"><span class="k">胜率</span><span class="v">${pct(h.win_rate, 1) ?? '样本不足'}</span></div>
-              <div class="kv"><span class="k">最大回撤</span><span class="v">${pct(h.max_drawdown, 1) ?? '样本不足'}</span></div>
+              <div class="kv"><span class="k">已记录交易样本</span><span class="v">${samples}</span></div>
+              <div class="kv"><span class="k">胜率</span><span class="v">${samples ? pct(h.win_rate, 1) ?? '样本不足' : '样本不足'}</span></div>
+              <div class="kv"><span class="k">最大回撤</span><span class="v">${samples ? pct(h.max_drawdown, 1) ?? '样本不足' : '样本不足'}</span></div>
               <div class="kv"><span class="k">连续失败</span><span class="v">${h.consecutive_failures ?? 0}</span></div>
-            </div>`).join('')
+            </div>`;
+          }).join('')
         : empty('暂无策略健康数据');
     }
 
     async function loadBriefing(d) {
+      const ticket = beginLoad('ai', d);
       const r = await apiGet(`/ai/copilot?date=${d}`);
+      if (!finishLoad(ticket)) return;
       if (!r.ok) { $('ai-output').innerHTML = errorBox(r.error); return; }
       const a = r.data || {};
-      $('ai-output').innerHTML = `
-        <div class="card"><h3>今日简报</h3>
-          <div class="row"><span>能否交易</span><strong class="${a.can_trade_today?'ok':'danger'}">${a.can_trade_today?'可以':'谨慎'}</strong></div>
+      $('ai-output').innerHTML = `${a.basis_note ? `<div class="fresh warn">${esc(a.basis_note)}</div>` : ''}
+        <div class="card"><h3>所选交易日简报 · ${esc(dateTextOf(d))}</h3>
+          <div class="row"><span>能否交易</span><strong class="${a.can_trade_today == null ? 'warn' : a.can_trade_today?'ok':'danger'}">${a.basis_date !== d || a.can_trade_today == null ? '等待当日确认' : a.can_trade_today?'可以':'观望'}</strong></div>
+          ${a.attack_note ? `<div class="muted trade-help">${esc(a.attack_note)}</div>` : ''}
           <div class="row"><span>情绪周期</span><strong>${esc(a.emotion || '—')}</strong></div>
-          <div class="row"><span>建议仓位</span><strong>${a.recommended_exposure != null ? pct(a.recommended_exposure,0) : '未接入'}</strong></div>
+          <div class="row"><span>建议仓位</span><strong>${a.recommended_exposure != null ? pct(a.recommended_exposure,0) : '等待确认'}</strong></div>
           <div class="row"><span>涨停环境</span><strong>${a.board && a.board.grade ? esc(a.board.grade) + ' 级' : '未接入'}</strong></div>
         </div>
         <div class="card" style="margin-top:12px;"><h3>最强板块</h3>${(a.top_sectors||[]).map(s => `<div class="row"><span>${esc(s.name)}</span><span class="tag">${s.score}</span></div>`).join('') || empty('无')}</div>
-        <div class="card" style="margin-top:12px;"><h3>机会（基准策略·仅供参考）</h3>
-          ${(a.top_opportunities||[]).map(o => `<div class="row"><span>${esc(o.name||o.ts_code)}</span><span class="tag">${actZh(o.suggested_action)}</span><span>${o.score}</span></div>`).join('') || empty('无')}
-          <div class="row"><span class="muted">这里展示的是基准策略口径；正式的候选池/七类机会/A-B-C 排序请看「机会」页。</span></div></div>`;
+        <div class="card" style="margin-top:12px;"><h3>关注机会</h3>
+          ${(a.top_opportunities||[]).map(o => `<div class="row"><span>${esc(o.name||o.ts_code)}</span><span class="tag">${esc(actZh(o.suggested_action))}</span><span>${o.score}</span></div>`).join('') || empty('无')}
+          <div class="row"><span class="muted">完整的机会排序、触发条件与仓位限制请看「机会」页。</span></div></div>`;
     }
 
-    $('refresh').onclick = () => loadTab(document.querySelector('#tabs button.active').dataset.tab);
+    const AI_TOOL_LABELS = {get_market_state:'市场状态',get_emotion_state:'情绪周期',get_sector_strength:'板块强度',
+      get_opportunities:'机会查询',get_board_environment:'涨停环境',get_positions:'当前模拟账户',
+      get_risk_status:'风险状态',get_strategy_health:'策略健康',get_trade_history:'交易记录',
+      audit_trade:'交易审计',get_personal_profile:'个人画像'};
+    const AI_FIELD_LABELS = {date:'数据日期',trade_date:'交易日',basis_date:'判断依据日期',basis_note:'数据说明',
+      state:'状态',score:'评分',confidence:'置信度',risk_level:'风险等级',recommended_exposure:'建议仓位',
+      source:'数据来源',data_kind:'数据类型',analysis_basis_date:'交易计划依据日期',requested_date:'请求日期',
+      emotion_cycle:'情绪周期',phase:'阶段',factors:'判断因素',name:'名称',ts_code:'证券代码',description:'说明',
+      value:'数值',weight:'权重',index_code:'指数代码',index_pct:'指数平均涨跌幅',index_change:'指数变化',
+      advance_count:'上涨家数',decline_count:'下跌家数',flat_count:'平盘家数',total_count:'全市场家数',
+      limit_up_count:'涨停家数',limit_down_count:'跌停家数',broken_count:'炸板家数',limit_up_success_rate:'封板率',
+      max_consecutive_up:'最高连板',yesterday_limit_up_performance:'昨日涨停溢价',total_amount:'成交额',breadth:'市场广度',
+      sector:'板块',industry:'行业',leader:'核心股',leader_name:'核心股名称',leader_code:'核心股代码',grade:'评级',
+      rank:'排名',avg_change:'平均价格变化',avg_pct_chg:'平均涨跌幅',leader_pct_chg:'核心股涨跌幅',
+      relative_strength:'相对强度',persistence:'持续性',diffusion:'扩散度',weakening:'走弱程度',risk:'风险等级',stock_codes:'板块证券',
+      action:'动作',suggested_action:'建议动作',stock_reason:'个股依据',sector_reason:'板块依据',reason:'依据',
+      reasons:'依据',notes:'备注',constraints:'约束',available:'是否可用',enabled:'是否启用',status:'状态',
+      strategy_id:'策略',version:'版本',signals:'信号',daily_signal_count:'每日信号数',cash:'现金',equity:'总权益',
+      positions:'持仓',quantity:'持仓数量',avg_cost:'平均成本',market_value:'持仓市值',buy_date:'最近买入日',
+      buy_lots:'买入批次',peak_equity:'历史峰值权益',orders:'订单',journal_pending:'复盘日志待恢复',valuation:'估值说明',
+      prices:'估值价格',quote_dates:'价格日期',sources:'价格来源',missing_codes:'缺失价格的证券',older_codes:'使用较旧价格的证券',
+      price:'价格',pnl:'已实现盈亏',return_pct:'收益率',holding_days:'持有天数',total_trades:'已平仓交易数',
+      winning_trades:'盈利笔数',losing_trades:'亏损笔数',win_rate:'胜率',avg_return:'平均收益率',
+      avg_holding_days:'平均持有天数',max_drawdown:'收益序列回撤',total_pnl:'累计盈亏',sharpe_ratio:'夏普比率',
+      profit_factor:'盈利因子',max_consecutive_losses:'最大连续亏损笔数',sample_sufficient:'样本是否充足',
+      config:'偏好设置',stats:'历史统计',risk_tolerance:'风险偏好',max_position_weight:'单股仓位上限',
+      max_drawdown_threshold:'回撤上限',stop_loss_pct:'止损幅度',take_profit_pct:'止盈幅度',preferred_sectors:'偏好板块',
+      min_holding_days:'最少持有天数',max_holding_days:'最多持有天数',findings:'审计发现',error_type:'问题类型',
+      evidence:'依据',severity:'等级',trade_id:'记录编号',user_reason:'记录理由',system_recommendation:'系统建议',
+      market_state:'市场状态',emotion_state:'情绪状态',sector_state:'板块状态',stock_state:'个股状态',
+      timestamp:'记录时间',result:'成交结果',can_trade:'是否可交易',can_attack:'是否可进攻',drawdown:'账户回撤',
+      plans:'机会计划',tier:'等级',tier_counts:'等级数量',opportunity_type:'机会类型',stage_rule:'阶段规则',
+      attack_note:'进攻约束',total_exposure_cap:'总仓位上限',available_exposure:'可用仓位',current_exposure:'当前仓位',
+      max_new_positions:'新开仓数量上限',high_quality_count:'高质量机会数',unavailable:'未接入数据',
+      historical_only:'仅供历史复盘',role:'结构角色',board_height:'连板高度',score_breakdown:'评分明细',
+      blocks:'评分组成',risk_deduction:'风险扣分',risk_items:'风险项',total:'合计',points:'得分',max_points:'分值上限',
+      items:'评分细项',detail:'说明',trigger:'触发条件',invalidation:'失效条件',position:'仓位方案',
+      suggested_weight:'建议仓位',shares:'股数',lots:'手数',amount:'金额',affordable:'资金是否充足',note:'说明',
+      why_not_buy:'为何不能直接买入',data_freshness:'数据时鲜',missing_data:'缺失数据',level:'风险等级',
+      realized_pnl:'已实现盈亏',requested_date:'请求日期',price_dates:'估值价格日期',older_price_codes:'使用较旧价格的证券',
+      emotion_score:'情绪分数',market_score:'日线市场评分',matched_rule:'命中规则',promotion_rate:'晋级率',broken_ratio:'炸板率',
+      max_continuous_up:'最高连板',limit_up_ratio:'涨停占比',yesterday_limit_up_avg_pct:'昨日涨停平均涨跌幅',
+      evidence:'规则证据',unit:'单位',threshold:'阈值',passed:'是否满足',invalidations:'失效规则',strength_parts:'情绪强度组成',
+      ratio:'比例',contribution:'得分贡献',high_board_avg_pct:'高位板平均涨跌幅',sentiment:'情绪倾向',
+      ladder:'连板梯队',first_board:'首板家数',second_board:'二板家数',third_board:'三板家数',high_board:'高位板家数',
+      max_height:'最高高度',leader_height:'龙头高度',reseal_count:'回封家数',yesterday_limit_up_premium:'昨日涨停溢价',
+      max_total_exposure:'总仓位上限',max_single_position:'单股仓位上限',flags:'风险标记',warnings:'提示',
+      best_strategy:'最佳策略',worst_strategy:'最差策略',best_market_phase:'最佳市场阶段',worst_market_phase:'最差市场阶段',
+      chase_frequency:'追涨频率',early_exit_frequency:'提前退出频率',recent_20_trades:'最近20笔收益',recent_50_trades:'最近50笔收益'};
+    const AI_RATIO_FIELDS = new Set(['confidence','recommended_exposure','limit_up_success_rate','breadth','return_pct',
+      'win_rate','avg_return','max_drawdown','drawdown','max_position_weight','max_drawdown_threshold','stop_loss_pct',
+      'take_profit_pct','max_total_exposure','max_single_position','chase_frequency','early_exit_frequency',
+      'total_exposure_cap','available_exposure','current_exposure','suggested_weight','promotion_rate','broken_ratio','limit_up_ratio']);
+    function toolScalar(key, value) {
+      if (['can_attack','can_trade'].includes(key)) return value == null ? '等待当日确认' : value ? '可以（受计划约束）' : '观望';
+      if (value === null || value === undefined || value === '') return '未提供';
+      if (typeof value === 'boolean') return value ? '是' : '否';
+      if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return '未提供';
+        if (AI_RATIO_FIELDS.has(key)) return pct(value, 1);
+        if (['index_pct','yesterday_limit_up_performance','avg_pct_chg','leader_pct_chg','yesterday_limit_up_avg_pct','high_board_avg_pct','yesterday_limit_up_premium'].includes(key)) return value.toFixed(2) + '%';
+        return Number.isInteger(value) ? num(value) : num(Number(value.toFixed(4)));
+      }
+      if (['date','trade_date','basis_date','buy_date','analysis_basis_date','requested_date'].includes(key)) return dateTextOf(value) || value;
+      if (['action','suggested_action'].includes(key)) return actZh(value);
+      if (['risk_level','risk','level'].includes(key)) return riskZh(value);
+      if (key === 'source') return SOURCE_ZH[value] || value;
+      if (key === 'strategy_id') return STRATEGY_ZH[value] || value;
+      return String(value);
+    }
+    function renderToolData(data, depth = 0) {
+      if (data === null || data === undefined) return empty('本次查询没有返回数据');
+      if (typeof data !== 'object') return `<div>${esc(toolScalar('', data))}</div>`;
+      if (Array.isArray(data)) {
+        if (!data.length) return empty('暂无匹配记录');
+        const items = data.slice(0, 20);
+        const rows = items.map((item, index) => typeof item !== 'object' || item === null
+          ? `<div class="row"><span>${esc(toolScalar('', item))}</span></div>`
+          : `<div class="card" style="margin-top:8px;"><h3>${esc(item.name || item.ts_code || '记录 ' + (index + 1))}</h3>${renderToolData(item, depth + 1)}</div>`).join('');
+        return rows + (data.length > items.length ? `<div class="muted trade-help">共 ${data.length} 条，展示前 ${items.length} 条；可到对应功能页查看更多。</div>` : '');
+      }
+      if (depth > 5) return empty('详细记录请到对应功能页查看');
+      const noClosedTrades = data.total_trades === 0;
+      const entries = Object.entries(data);
+      return entries.slice(0, 60).map(([key, value]) => {
+        const label = AI_FIELD_LABELS[key] || key;
+        if (value !== null && typeof value === 'object') {
+          return `<details style="margin:8px 0;"${depth < 1 ? ' open' : ''}><summary>${esc(label)}${Array.isArray(value) ? '（' + value.length + ' 条）' : ''}</summary>${renderToolData(value, depth + 1)}</details>`;
+        }
+        const sampleMissing = noClosedTrades && ['win_rate','avg_return','avg_holding_days','max_drawdown','sharpe_ratio','profit_factor'].includes(key);
+        return `<div class="kv"><span class="k">${esc(label)}</span><span class="v">${esc(sampleMissing ? '样本不足' : toolScalar(key, value))}</span></div>`;
+      }).join('') + (entries.length > 60 ? '<div class="muted trade-help">条目较多，完整记录请到对应功能页查看。</div>' : '') || empty('暂无匹配记录');
+    }
+    function renderToolAnswer(answer, selectedDate) {
+      if (!Object.prototype.hasOwnProperty.call(answer, 'data')) {
+        return `<div class="card">${esc(answer.answer || '本次查询没有返回内容')}</div>`;
+      }
+      const names = (answer.tool_calls || []).map(name => AI_TOOL_LABELS[name] || '系统数据查询');
+      const title = names.join(' / ') || '系统数据查询';
+      const basis = answer.data && !Array.isArray(answer.data) ? dateKey(answer.data.basis_date || answer.data.date) : '';
+      const note = basis && basis !== selectedDate
+        ? `<div class="fresh warn">所选日期 ${esc(dateTextOf(selectedDate))}；当前结果依据 ${esc(dateTextOf(basis))}，仅供历史复盘。</div>` : '';
+      const tools = answer.tool_calls || [];
+      const accountQuery = tools.some(name => ['get_positions','get_trade_history','get_personal_profile','audit_trade'].includes(name));
+      const detail = accountQuery ? '账户与交易记录展示当前账本。' : '市场快照与日线情绪分别保留各自评分；是否进攻遵循机会页计划。';
+      const data = tools.includes('get_trade_history') && Array.isArray(answer.data) ? [...answer.data].reverse() : answer.data;
+      return `${note}<div class="card"><h3>${esc(title)} · 查询结果</h3><div class="muted trade-help">所选日期 ${esc(dateTextOf(selectedDate))} · ${esc(detail)}</div>${renderToolData(data)}</div>`;
+    }
+
+    const activeTab = () => document.querySelector('#tabs button.active').dataset.tab;
+    function validDay(value) {
+      if (!/^\d{8}$/.test(value)) return false;
+      const parsed = new Date(`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`);
+      return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0,10).replace(/-/g,'') === value;
+    }
+    function requestId(kind, body) {
+      const key = 'copilot.pending.' + kind;
+      const signature = JSON.stringify(body);
+      let pending;
+      try { pending = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) {}
+      pending = pending || pendingRequests[kind];
+      if (!pending || pending.signature !== signature) {
+        const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+        pending = {signature, id:kind + '_' + id};
+      }
+      pendingRequests[kind] = pending;
+      try { sessionStorage.setItem(key, JSON.stringify(pending)); } catch (_) {}
+      return pending.id;
+    }
+    function clearRequestId(kind) {
+      delete pendingRequests[kind];
+      try { sessionStorage.removeItem('copilot.pending.' + kind); } catch (_) {}
+    }
+    const pendingRequests = {};
+    function formBusy(prefix, busy) {
+      document.querySelectorAll(`[id^="${prefix}-"]`).forEach(el => {
+        if (['INPUT','SELECT','BUTTON'].includes(el.tagName)) el.disabled = busy;
+      });
+      $(prefix + '-submit').disabled = busy;
+    }
+    $('refresh').onclick = async () => {
+      if ($('refresh').disabled) return;
+      $('refresh').disabled = true;
+      try {
+        await Promise.all([initDates(), loadSystemStatus()]);
+        await loadTab(activeTab());
+      } finally { $('refresh').disabled = false; }
+    };
     $('pt-submit').onclick = async () => {
+      if ($('pt-submit').disabled) return;
       const body = {
         ts_code: $('pt-code').value.trim().toUpperCase(),
         action: $('pt-action').value,
         price: Number($('pt-price').value),
-        quantity: Number($('pt-qty').value || 0),
-        trade_date: $('pt-date').value.trim() || undefined,
+        quantity: Number($('pt-qty').value),
+        trade_date: $('pt-date').value.trim().replace(/-/g, '') || currentSessionDay,
       };
-      if (!body.ts_code || !body.price) { $('pt-result').innerHTML = '<span class="danger">请填写代码与价格</span>'; return; }
+      if (!/^\d{6}\.(SZ|SH|BJ)$/.test(body.ts_code) || !Number.isFinite(body.price) || body.price <= 0 || !Number.isInteger(body.quantity) || body.quantity <= 0) { $('pt-result').innerHTML = '<span class="danger">请填写完整代码（如 000001.SZ）、正价格与正整数数量</span>'; return; }
+      if (body.action === 'BUY' && body.quantity % 100 !== 0) { $('pt-result').innerHTML = '<span class="danger">买入数量必须为 100 股整数倍</span>'; return; }
+      if (!validDay(body.trade_date) || (currentSessionDay && body.trade_date !== currentSessionDay)) { $('pt-result').innerHTML = `<span class="danger">模拟成交仅支持当前交易日 ${esc(currentSessionDay || '（请先刷新获取）')}</span>`; return; }
+      formBusy('pt', true);
+      body.signal_id = requestId('manual', body);
       $('pt-result').textContent = '提交中…';
       const r = await apiPost('/paper/trade', body);
+      formBusy('pt', false);
+      if (r.ok) clearRequestId('manual');
       $('pt-result').innerHTML = r.ok
-        ? `<span class="ok">已成交：${esc(r.data.order.status)} ${esc(r.data.order.quantity)} 股 @ ${esc(r.data.order.price)}</span>`
-        : `<span class="danger">失败：${esc(r.error)}</span>`;
+        ? (r.data.order.status === 'FILLED'
+          ? `<span class="ok">${esc(body.ts_code)} ${actZh(body.action)}已成交：${esc(r.data.order.quantity)} 股 @ ${esc(r.data.order.price)}</span>`
+          : `<span class="danger">未成交：${esc(r.data.order.reason)}</span>`)
+        : `<span class="danger">${esc(r.error)}${r.uncertain ? '；结果尚未确认。保持原输入重试会使用同一订单号，防止重复成交。' : ''}</span>`;
       if (r.ok) loadReview();
     };
     $('dj-submit').onclick = async () => {
-      const qty = Number($('pt-qty').value || 0);
+      if ($('dj-submit').disabled) return;
       const body = {
         ts_code: $('dj-code').value.trim().toUpperCase(),
         action: $('dj-action').value,
-        price: Number($('dj-price').value || 0),
-        quantity: qty || 0,
+        price: $('dj-price').value.trim() ? Number($('dj-price').value) : null,
+        quantity: Number($('dj-qty').value || 0),
+        trade_date: $('dj-date').value.trim().replace(/-/g, '') || date(),
         user_reason: $('dj-reason').value.trim(),
         strategy_id: 'manual',
         market_state: '', emotion_state: '', sector_state: '', stock_state: '',
         system_recommendation: '',
         result: null,
       };
-      if (!body.ts_code) { $('dj-result').innerHTML = '<span class="danger">请填写代码</span>'; return; }
+      if (!/^\d{6}\.(SZ|SH|BJ)$/.test(body.ts_code)) { $('dj-result').innerHTML = '<span class="danger">请填写完整代码，如 000001.SZ</span>'; return; }
+      if ((body.price !== null && (!Number.isFinite(body.price) || body.price <= 0)) || !Number.isInteger(body.quantity) || body.quantity < 0 || !validDay(body.trade_date)) { $('dj-result').innerHTML = '<span class="danger">请检查日期、价格与数量；价格可留空，记录数量为非负整数</span>'; return; }
+      body.request_id = requestId('decision', body);
+      formBusy('dj', true);
       $('dj-result').textContent = '提交中…';
       const r = await apiPost('/trades', body);
+      formBusy('dj', false);
+      if (r.ok) clearRequestId('decision');
       $('dj-result').innerHTML = r.ok
-        ? `<span class="ok">已记录 ${esc(r.data.data ? r.data.data.trade_id : '')}</span>`
-        : `<span class="danger">失败：${esc(r.error)}</span>`;
+        ? `<span class="ok">${esc(body.ts_code)} 决策已记录，交易日 ${esc(dateTextOf(body.trade_date))}</span>`
+        : `<span class="danger">${esc(r.error)}${r.uncertain ? '；结果尚未确认。保持原输入重试会防止重复记录。' : ''}</span>`;
       if (r.ok) loadReview();
     };
     $('bt-run').onclick = async () => {
+      if ($('bt-run').disabled) return;
+      const body = {start_date:$('bt-start').value.trim().replace(/-/g,''), end_date:$('bt-end').value.trim().replace(/-/g,''), strategy:$('bt-strategy').value};
+      if (!validDay(body.start_date) || !validDay(body.end_date) || body.start_date > body.end_date) { $('bt-output').innerHTML = errorBox('请输入有效的回测起止日期，开始日期不能晚于结束日期'); return; }
+      $('bt-run').disabled = true;
+      const ticket = beginLoad('backtest');
       $('bt-output').innerHTML = '<span class="muted">回测运行中…</span>';
-      const r = await apiPost('/backtest/runs', {start_date:$('bt-start').value, end_date:$('bt-end').value, strategy:$('bt-strategy').value});
+      const r = await apiPost('/backtest/runs', body, 120000);
+      $('bt-run').disabled = false;
+      if (!finishLoad(ticket)) return;
+      if (r.uncertain) r.error += '；回测可能仍在后台完成，请刷新回测记录后再决定是否重跑';
       if (!r.ok) { $('bt-output').innerHTML = errorBox(r.error); return; }
       const run = r.data || {}; const m = run.metrics || {};
       $('bt-output').innerHTML = `<div class="card"><h3>${stratZh(run.strategy_id)} · ${esc(run.start_date)}~${esc(run.end_date)}</h3><div class="flex">${metric('总收益', pct(m.total_return,2))}${metric('年化', pct(m.annualized_return,2))}${metric('最大回撤', pct(m.max_drawdown,2))}${metric('夏普', m.sharpe_ratio)}${metric('交易数', m.trade_count)}${metric('胜率', pct(m.win_rate,1))}${metric('盈亏比', m.payoff_ratio)}${metric('盈利因子', m.profit_factor)}</div></div>`;
     };
     $('ai-ask').onclick = async () => {
-      const q = $('ai-q').value || '';
+      if ($('ai-ask').disabled) return;
+      const q = $('ai-q').value.trim();
+      if (!q) { loadBriefing(date()); return; }
+      $('ai-ask').disabled = true;
+      const ticket = beginLoad('ai', date());
       const r = await apiGet(`/ai/copilot?date=${date()}&q=${encodeURIComponent(q)}`);
+      $('ai-ask').disabled = false;
+      if (!finishLoad(ticket)) return;
       if (!r.ok) { $('ai-output').innerHTML = errorBox(r.error); return; }
       const a = r.data || {};
-      $('ai-output').innerHTML = `<div class="card"><div>${esc(a.answer || 'AI 未返回内容')}</div></div>`;
+      $('ai-output').innerHTML = renderToolAnswer(a, ticket.date);
     };
 
-    // Trading days come from the local history store, so the picker can never
-    // offer a date the system has no data for (that used to look like "the
-    // numbers never change" for every older date).
+    $('ai-q').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) $('ai-ask').click(); });
+
+    // 显式区分当前交易日与已有历史数据，刷新后保留用户选择。
     async function initDates() {
       const [latestR, datesR] = await Promise.all([apiGet('/data/latest'), apiGet('/data/history/dates')]);
-      const latest = latestR.ok ? latestR.data.date : null;
-      const dates = (datesR.ok && datesR.data.dates) || [];
-      const fmt = (d) => d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8);
+      // 请求期间用户可能切换日期；渲染时读取当前选择，避免刷新跳回旧日期。
+      const selected = date();
+      const latest = latestR.ok && validDay(latestR.data.date || '') ? latestR.data.date : null;
+      if (latestR.ok) latestDateInfo = latestR.data;
+      const sessionDay = dateKey(latestDateInfo.current_trading_day || latest);
+      if (sessionDay) currentSessionDay = sessionDay;
+      const listedDates = (datesR.ok && datesR.data.dates || []).filter(validDay);
+      const coverage = latestDateInfo.history_dates || (datesR.ok && datesR.data.history_dates) || [];
+      if (Array.isArray(coverage) && coverage.length) {
+        dateAvailability = Object.fromEntries(coverage.filter(x => validDay(x.date || '')).map(x => [x.date, x]));
+      }
+      const snapshotDay = dateKey(latestDateInfo.snapshot_date);
+      if (snapshotDay) dateAvailability[snapshotDay] = {...(dateAvailability[snapshotDay] || {}), has_snapshot:true};
+      latestCompleteDate = dateKey(latestDateInfo.latest_complete_date)
+        || Object.keys(dateAvailability).filter(d => dateAvailability[d].complete).sort().pop() || '';
+      const dates = Array.from(new Set([...listedDates, ...Object.keys(dateAvailability), latest, currentSessionDay, snapshotDay, latestCompleteDate].filter(d => validDay(d || '')))).sort().reverse();
+      const selectable = [];
       const options = [];
-      // Default to the newest day that has complete local data; today is offered
-      // separately (labelled) because its bars may not exist yet.
       for (const d of dates) {
-        const label = d === latest ? `${fmt(d)}（今日 · ${esc((latestR.ok && latestR.data.phase) || '')}）` : fmt(d);
-        options.push(`<option value="${d}">${label}</option>`);
+        const entry = dateAvailability[d] || {};
+        const incomplete = entry.complete === false && !entry.has_snapshot;
+        const waitingToday = d === currentSessionDay && d !== latest && !entry.complete && !entry.has_snapshot;
+        const disabled = incomplete || waitingToday;
+        let label = dateTextOf(d);
+        if (entry.complete) label += `（日线可分析${Number.isFinite(entry.coverage_ratio) ? ' · ' + (entry.coverage_ratio * 100).toFixed(1) + '%' : ''}）`;
+        else if (entry.has_snapshot) label += '（行情快照 · 日线待补齐）';
+        else if (entry.complete === false) label += `（日线 ${Number.isFinite(entry.coverage_ratio) ? Math.round(entry.coverage_ratio * 100) + '%' : '不完整'} · 补数中）`;
+        else if (d === currentSessionDay) label += `（当前交易日 · ${latestDateInfo.phase || '数据待确认'}）`;
+        if (!disabled) selectable.push(d);
+        options.push(`<option value="${d}"${disabled ? ' disabled' : ''}>${esc(label)}</option>`);
       }
-      if (latest && !dates.includes(latest)) {
-        options.unshift(`<option value="${latest}">${fmt(latest)}（今日 · ${esc((latestR.ok && latestR.data.phase) || '')}，当日数据未落地）</option>`);
-      }
-      $('date').innerHTML = options.join('') || '<option value="">无本地数据</option>';
+      if (!options.length && selected) return; // 临时网络故障不清空已选日期。
+      $('date').innerHTML = options.join('') || '<option value="">交易日未就绪，请刷新</option>';
+      $('date').disabled = !selectable.length;
+      const keepSelected = selectable.includes(selected) && (manualDateChoice || !automaticDate || selected !== automaticDate);
+      $('date').value = keepSelected ? selected : selectable.includes(latest) ? latest : selectable[0] || '';
+      if (!keepSelected) automaticDate = date();
+      updateDateContext();
+      if (!$('pt-date').value) $('pt-date').value = currentSessionDay;
+      if (!$('dj-date').value) $('dj-date').value = date();
+      const completeDates = selectable.filter(d => dateAvailability[d] ? dateAvailability[d].complete : listedDates.includes(d));
+      if (!$('bt-end').value && completeDates.length) $('bt-end').value = completeDates[0];
+      if (!$('bt-start').value && completeDates.length) $('bt-start').value = completeDates[Math.min(completeDates.length - 1, 59)];
     }
 
-    $('date').onchange = () => loadTab(document.querySelector('#tabs button.active').dataset.tab);
+    $('date').onchange = () => { manualDateChoice = true; updateDateContext(); return loadTab(activeTab()); };
+    $('latest-complete').onclick = () => {
+      if (!latestCompleteDate) return;
+      $('date').value = latestCompleteDate;
+      return $('date').onchange();
+    };
+    $('latest-snapshot').onclick = () => {
+      if (!latestDateInfo.snapshot_date) return;
+      $('date').value = latestDateInfo.snapshot_date;
+      return $('date').onchange();
+    };
+    window.addEventListener('online', () => { loadSystemStatus(); });
+    window.addEventListener('offline', () => { $('net-status').textContent = '网络已断开；本地服务和已缓存数据仍可尝试访问'; $('net-status').className = 'warn'; });
+    setInterval(() => { if (!document.hidden) loadSystemStatus(); }, 30000);
 
     (async function init() {
+      loadSystemStatus();
       await initDates();
-      loadDashboard(date());
+      loadTab('dashboard');
     })();
   </script>
 </body>

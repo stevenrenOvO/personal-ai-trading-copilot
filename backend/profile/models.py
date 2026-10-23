@@ -68,9 +68,9 @@ class ProfileStats:
         self.winning_trades = sum(1 for t in trades if t.get("pnl", 0) > 0)
         self.losing_trades = sum(1 for t in trades if t.get("pnl", 0) < 0)
         self.win_rate = self.winning_trades / self.total_trades if self.total_trades else 0.0
-        returns = [t.get("return_pct", 0.0) for t in trades]
+        returns = [t["return_pct"] for t in trades if t.get("return_pct") is not None]
         self.avg_return = sum(returns) / len(returns) if returns else 0.0
-        holdings = [t.get("holding_days", 0) for t in trades]
+        holdings = [t["holding_days"] for t in trades if t.get("holding_days") is not None]
         self.avg_holding_days = sum(holdings) / len(holdings) if holdings else 0.0
         pnls = [t.get("pnl", 0.0) for t in trades]
         self.total_pnl = sum(pnls)
@@ -80,7 +80,7 @@ class ProfileStats:
         gross_loss = abs(sum(losses))
         self.profit_factor = gross_profit / gross_loss if gross_loss else 0.0
         self.max_consecutive_losses = self._max_consecutive_losses(pnls)
-        self.max_drawdown = self._max_drawdown(pnls)
+        self.max_drawdown = self._max_drawdown(returns)
         self.sample_sufficient = len(trades) >= 10
 
     def to_dict(self) -> dict[str, Any]:
@@ -142,12 +142,12 @@ class ProfileStats:
         return best
 
     @staticmethod
-    def _max_drawdown(pnls: list[float]) -> float:
+    def _max_drawdown(returns: list[float]) -> float:
         equity = 1.0
         peak = 1.0
         max_dd = 0.0
-        for p in pnls:
-            equity += p
+        for value in returns:
+            equity *= max(0.0, 1.0 + value)
             peak = max(peak, equity)
             max_dd = min(max_dd, equity / peak - 1)
         return max_dd

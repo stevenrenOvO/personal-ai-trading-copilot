@@ -46,18 +46,22 @@ def consecutive_limit_up_heights(
     daily: pd.DataFrame,
     date: str,
     limits_for_day: Callable[[str], Optional[pd.DataFrame]],
+    *,
+    trading_days: Optional[list[str]] = None,
 ) -> dict[str, int]:
     """Height (consecutive limit-up days ending on ``date``) per code.
 
     Only codes limit-up on ``date`` appear in the result; a code that broke its
-    run is simply absent.
+    run is simply absent. ``trading_days`` preserves open sessions with no
+    collected bars so missing data cannot be counted as a continuous streak.
     """
     if daily is None or daily.empty:
         return {}
 
     frame = daily.copy()
     frame["trade_date"] = frame["trade_date"].astype(str)
-    days = sorted(day for day in frame["trade_date"].unique() if day <= date)
+    observed = frame["trade_date"].unique()
+    days = sorted({str(day) for day in (trading_days if trading_days is not None else observed) if str(day) <= date})
     if not days:
         return {}
 

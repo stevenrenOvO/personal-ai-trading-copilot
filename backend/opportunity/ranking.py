@@ -258,8 +258,11 @@ class OpportunityRankingEngine:
             )
         stage = setups.stage or "数据不足"
         state = state or {}
-        equity = float(state.get("equity") or 1_000_000.0)
-        cash = float(state.get("cash") or equity)
+        equity = float(state["equity"] if state.get("equity") is not None else 1_000_000.0)
+        cash = float(state["cash"] if state.get("cash") is not None else equity)
+        import math
+        if not math.isfinite(equity) or not math.isfinite(cash) or equity < 0 or cash < 0:
+            raise ValueError("equity and cash must be finite and non-negative")
         positions: dict[str, Any] = dict(state.get("positions") or {})
         prices: dict[str, float] = dict(state.get("prices") or {})
 
@@ -270,6 +273,8 @@ class OpportunityRankingEngine:
             )
         cap = STAGE_EXPOSURE_CAP.get(stage, 0.0)
         available_exposure = max(0.0, cap - current_exposure)
+        if cash <= 0 or equity <= 0:
+            available_exposure = 0.0
         max_new = MAX_NEW_POSITIONS.get(stage, 0)
         if available_exposure <= 0:
             max_new = 0

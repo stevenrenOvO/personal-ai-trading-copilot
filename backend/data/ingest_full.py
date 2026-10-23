@@ -22,6 +22,8 @@ import json
 import sys
 import time
 from pathlib import Path
+from datetime import datetime, timezone
+from typing import Callable
 
 import pandas as pd
 
@@ -139,11 +141,14 @@ def run_backfill(
     report_every: int = 300,
     batch: int | None = None,
     db_path: Path | None = None,
+    required_dates: list[str] | None = None,
+    progress_callback: Callable[[dict], None] | None = None,
+    priority_codes: list[str] | None = None,
 ) -> dict:
-    """Fill missing trading days fast, using Eastmoney's kline endpoint.
+    """Fill missing daily bars through the selected public k-line endpoint.
 
-    A stock counts as done when it already has a bar for ``end_date``, so an
-    interrupted backfill resumes from where it stopped.
+    Every required date must be present before a stock is skipped. A partial
+    response is stored, with remaining gaps reported for subsequent retries.
     """
     if source == "eastmoney":
         from backend.data.providers.eastmoney import fetch_daily
@@ -152,10 +157,42 @@ def run_backfill(
 
     history = MarketHistory(db_path)
     targets = _universe_codes(limit=limit, codes=codes)
-    done = history.codes_with_date(end_date)
+    required = sorted(set(required_dates or [end_date]))
+    if any(not start_date <= day <= end_date for day in required):
+        raise ValueError("required_dates must be inside the requested range")
+    done = set(targets)
+    for day in required:
+        done.intersection_update(history.codes_with_date(day))
     todo = [c for c in targets if c not in done]
+    if priority_codes:
+        priority = {code: index for index, code in enumerate(priority_codes)}
+        todo.sort(key=lambda code: (priority.get(code, len(priority)), code))
     if batch is not None:
         todo = todo[:batch]
+
+    progress_started = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    stored_rows = 0
+
+    def report(processed: int, downloaded: int, failed_count: int, *, phase: str = "downloading") -> None:
+        if progress_callback is None:
+            return
+        elapsed = max(0.0, time.monotonic() - progress_started)
+        payload = {"phase": phase, "source": source,
+            "window_start": start_date, "window_end": end_date, "required_dates": required,
+            "processed": processed, "total": len(todo), "downloaded": downloaded,
+            "failed": failed_count, "skipped": len(targets) - len(todo),
+            "stored_rows": stored_rows, "started_at": started_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "elapsed_sec": round(elapsed, 1),
+            "rate_per_sec": round(processed / elapsed, 3) if elapsed else 0.0}
+        try:
+            progress_callback(payload)
+        except Exception:  # noqa: BLE001 - progress must not interrupt durable writes
+            import logging
+            logging.getLogger(__name__).warning("Backfill progress callback failed", exc_info=True)
+
+    report(0, 0, 0)
 
     print(
         f"backfill universe={len(targets)} already={len(done & set(targets))} todo={len(todo)} "
@@ -163,11 +200,13 @@ def run_backfill(
         file=sys.stderr,
     )
     if not todo:
+        report(0, 0, 0, phase="completed")
         return {"done": 0, "failed": 0, "skipped": len(targets), "coverage": history.coverage()}
 
     import time as _time
 
     ok = 0
+    fetched_codes = set()
     failed: dict[str, str] = {}
     corporate_actions = 0
     started = _time.time()
@@ -180,8 +219,9 @@ def run_backfill(
                     last_error = "empty"
                     break
                 corporate_actions += int(frame.attrs.get("corporate_action_rows", 0))
-                history.ingest(frame)
+                stored_rows += history.ingest(frame)
                 ok += 1
+                fetched_codes.add(code)
                 last_error = ""
                 break
             except Exception as exc:  # noqa: BLE001
@@ -189,6 +229,7 @@ def run_backfill(
                 _time.sleep(min(1.0 * attempt, 3.0))
         if last_error:
             failed[code] = last_error
+        report(index, ok, len(failed))
         if index % report_every == 0 or index == len(todo):
             elapsed = _time.time() - started
             rate = index / elapsed if elapsed else 0.0
@@ -203,14 +244,22 @@ def run_backfill(
     history.set_state("last_backfill_end", end_date)
     history.set_state("last_backfill_corporate_actions", str(corporate_actions))
     elapsed = _time.time() - started
+    failures_by_date = {}
+    for day in required:
+        absent = sorted(set(targets) - history.codes_with_date(day))
+        failures_by_date[day] = {"failed": len(absent), "failed_codes": absent[:20]}
+        for code in fetched_codes.intersection(absent):
+            failed.setdefault(code, "missing_required_dates")
+    report(len(todo), ok, len(failed), phase="completed")
     return {
-        "done": ok,
+        "done": len(fetched_codes - set(failed)),
         "failed": len(failed),
         "failed_codes": list(failed)[:20],
         "corporate_action_rows": corporate_actions,
         "skipped": len(targets) - len(todo),
         "elapsed_sec": round(elapsed, 1),
         "coverage": history.coverage(),
+        "failures_by_date": failures_by_date,
     }
 
 

@@ -33,6 +33,9 @@ class FallbackProvider(DataProvider):
                 continue
             if isinstance(result, pd.DataFrame) and result.empty:
                 continue
+            if isinstance(result, pd.DataFrame):
+                result.attrs["source"] = provider.name
+                result.attrs["data_timeliness"] = getattr(provider, "data_timeliness", "historical")
             return result
         if last_error is not None:
             raise DataProviderError(

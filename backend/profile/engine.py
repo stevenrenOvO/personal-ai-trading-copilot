@@ -53,12 +53,14 @@ class ProfileEngine:
         trade_dicts = []
         for trade in trades:
             result = trade.result or {}
-            pnl = result.get("pnl", 0.0)
+            if trade.action != "SELL" or result.get("pnl") is None:
+                continue
+            pnl = result["pnl"]
             trade_dicts.append(
                 {
                     "pnl": pnl,
-                    "return_pct": result.get("return_pct", 0.0),
-                    "holding_days": result.get("holding_days", 0),
+                    "return_pct": result.get("return_pct"),
+                    "holding_days": result.get("holding_days"),
                     "strategy_id": trade.strategy_id,
                     "market_state": trade.market_state,
                 }

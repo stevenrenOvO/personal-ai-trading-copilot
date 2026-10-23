@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from typing import Any, Callable, Optional, TypeVar
 
 T = TypeVar("T")
@@ -31,6 +32,8 @@ class TTLCache:
         self.maxsize = int(maxsize)
         self._entries: dict[Any, tuple[float, Any]] = {}
         self._lock = threading.Lock()
+        self._flights: dict[Any, Future] = {}
+        self._generation = 0
 
     def get(self, key: Any) -> Optional[Any]:
         with self._lock:
@@ -51,19 +54,42 @@ class TTLCache:
                 del self._entries[oldest]
 
     def get_or_compute(self, key: Any, factory: Callable[[], T]) -> T:
-        """Return the cached value or compute and store it.
-
-        The factory runs outside the lock so a slow computation cannot block
-        readers of other keys; two threads may therefore compute the same key
-        once, which is harmless here (the result is deterministic).
-        """
+        """Share one computation per key; invalidation cannot revive old entries."""
         cached = self.get(key)
         if cached is not None:
             return cached
-        value = factory()
-        self.put(key, value)
-        return value
+        with self._lock:
+            generation = self._generation
+            flight_key = (generation, key)
+            future = self._flights.get(flight_key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._flights[flight_key] = future
+        if not owner:
+            return future.result()
+        try:
+            # Recheck after becoming the owner: another finished computation
+            # may have published between the initial get and this lock.
+            value = self.get(key)
+            if value is None:
+                value = factory()
+            with self._lock:
+                if generation == self._generation:
+                    self._entries[key] = (time.monotonic(), value)
+                    while len(self._entries) > self.maxsize:
+                        oldest = min(self._entries, key=lambda k: self._entries[k][0])
+                        del self._entries[oldest]
+            future.set_result(value)
+            return value
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        finally:
+            with self._lock:
+                self._flights.pop(flight_key, None)
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._generation += 1

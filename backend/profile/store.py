@@ -15,8 +15,8 @@ class ProfileStore:
 
     def save(self, profile: UserProfile) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(profile.to_dict(), ensure_ascii=False) + "\n")
+        from backend.data.atomic import atomic_write
+        atomic_write(self.path, json.dumps(profile.to_dict(), ensure_ascii=False, allow_nan=False) + "\n")
 
     def load(self) -> UserProfile | None:
         if not self.path.exists():

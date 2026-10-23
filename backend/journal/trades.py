@@ -45,6 +45,7 @@ class TradeRecord:
     user_reason: str
     execution_reason: str
     result: Optional[dict[str, Any]] = field(default_factory=dict)
+    trade_date: str = ""
 
     @classmethod
     def create(
@@ -68,6 +69,7 @@ class TradeRecord:
         user_reason: str = "",
         execution_reason: str = "",
         result: Optional[dict[str, Any]] = None,
+        trade_date: str = "",
     ) -> "TradeRecord":
         return cls(
             trade_id=trade_id(),
@@ -90,10 +92,18 @@ class TradeRecord:
             user_reason=user_reason,
             execution_reason=execution_reason,
             result=result or {},
+            trade_date=trade_date,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def same_payload_as(self, other: "TradeRecord") -> bool:
+        """An idempotent replay may carry a different recording timestamp."""
+        previous, incoming = self.to_dict(), other.to_dict()
+        previous.pop("timestamp", None)
+        incoming.pop("timestamp", None)
+        return previous == incoming
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TradeRecord":
@@ -107,16 +117,29 @@ class TradeJournal:
         self.path = Path(root) / "journal" / "trades.jsonl"
 
     def record(self, trade: TradeRecord) -> TradeRecord:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(trade.to_dict(), ensure_ascii=False) + "\n")
+        from backend.data.atomic import atomic_write, file_lock
+        with file_lock(self.path):
+            records = self._read()
+            previous = next((record for record in records if record.trade_id == trade.trade_id), None)
+            if previous is not None:
+                if not previous.same_payload_as(trade):
+                    raise ValueError("相同 trade_id 不能覆盖已有成交记录")
+                return previous
+            records.append(trade)
+            atomic_write(self.path, "".join(json.dumps(record.to_dict(), ensure_ascii=False,
+                allow_nan=False) + "\n" for record in records))
         return trade
 
     def list(self) -> list[TradeRecord]:
+        from backend.data.atomic import file_lock
+        with file_lock(self.path):
+            return self._read()
+
+    def _read(self) -> list[TradeRecord]:
         if not self.path.exists():
             return []
-        records: list[TradeRecord] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                records.append(TradeRecord.from_dict(json.loads(line)))
-        return records
+        try:
+            return [TradeRecord.from_dict(json.loads(line))
+                    for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("成交日志内容损坏，请修复后重试") from exc

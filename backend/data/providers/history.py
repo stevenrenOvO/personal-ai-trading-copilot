@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import threading
 import time
+import sqlite3
+from contextlib import closing
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional
@@ -79,6 +81,7 @@ class HistoryProvider(DataProvider):
         self._st_map: Optional[dict[str, bool]] = None
         self._limit_cache: dict[str, pd.DataFrame] = {}
         self._cal_cache: Optional[pd.DataFrame] = None
+        self._cal_cache_token: tuple | None = None
         self._window_cache: "OrderedDict[Any, tuple[float, pd.DataFrame]]" = OrderedDict()
         self._lock = threading.Lock()
 
@@ -121,7 +124,7 @@ class HistoryProvider(DataProvider):
             frame = frame[frame["list_status"] == list_status]
         return frame.reset_index(drop=True)
 
-    def _st_flags(self) -> dict[str, bool]:
+    def _st_flags(self, trade_date: str | None = None) -> dict[str, bool]:
         """ST/*ST flag per code.
 
         BaoStock's ingested ``stock_basic.csv`` leaves the ``is_st`` column
@@ -130,7 +133,7 @@ class HistoryProvider(DataProvider):
         A stale name is corrected with the stock's own recent moves: the 5% cap
         only holds when the stock actually trades inside a 5% band.
         """
-        if self._st_map is not None:
+        if self._st_map is not None and trade_date is None:
             return self._st_map
         flags: dict[str, bool] = {}
         try:
@@ -139,24 +142,26 @@ class HistoryProvider(DataProvider):
             self._st_map = flags
             return flags
         has_column = "is_st" in basic.columns
-        recent = self._recent_max_moves()
+        recent = self._recent_max_moves(trade_date)
         for _, row in basic.iterrows():
             code = str(row["ts_code"])
             explicit = str(row.get("is_st") or "").strip().upper() if has_column else ""
             name = str(row.get("name") or "").upper()
             named_st = is_st_flag(explicit) or "ST" in name
             flags[code] = effective_limit_rate(code, named_st, recent.get(code)) == 0.05
-        self._st_map = flags
+        if trade_date is None:
+            self._st_map = flags
         return flags
 
-    def _recent_max_moves(self) -> dict[str, float]:
+    def _recent_max_moves(self, trade_date: str | None = None) -> dict[str, float]:
         """Largest absolute daily move per code in the local store."""
         try:
             with self.history._connect() as conn:  # noqa: SLF001 - same store
                 rows = conn.execute(
                     "SELECT ts_code, MAX(ABS(pct_chg)) FROM daily "
                     "WHERE pct_chg IS NOT NULL AND ABS(pct_chg) < 25 "
-                    "GROUP BY ts_code"
+                    + ("AND trade_date <= ? " if trade_date else "") +
+                    "GROUP BY ts_code", (trade_date,) if trade_date else (),
                 ).fetchall()
         except Exception:  # noqa: BLE001
             return {}
@@ -239,6 +244,7 @@ class HistoryProvider(DataProvider):
             self._window_cache.clear()
             self._limit_cache.clear()
             self._cal_cache = None
+            self._cal_cache_token = None
             self._basic = None
             self._st_map = None
 
@@ -286,7 +292,7 @@ class HistoryProvider(DataProvider):
         bars = self.history.load(start_date=trade_date, end_date=trade_date)
         if bars.empty:
             return pd.DataFrame(columns=["trade_date", "ts_code", "up_limit", "down_limit"])
-        flags = self._st_flags()
+        flags = self._st_flags(trade_date)
         bars = bars.assign(is_st=[flags.get(str(code), False) for code in bars["ts_code"]])
         limits = compute_limit_prices(bars)
         result = (
@@ -303,18 +309,46 @@ class HistoryProvider(DataProvider):
 
     # -- calendar ------------------------------------------------------
     def _calendar_frame(self) -> pd.DataFrame:
-        if self._cal_cache is not None:
+        # Read the cached exchange calendar without making a vendor request.
+        # Observed bar dates alone hide an entirely missing open session and
+        # would let a limit-up streak bridge that gap.
+        cal_path = self.root / "trade_cal.csv"
+        session_path = self.root / "cache" / "session.db"
+        paths = (cal_path, session_path, Path(str(session_path) + "-wal"))
+        def stamp(path):
+            try:
+                stat = path.stat()
+                return stat.st_mtime_ns, stat.st_size
+            except OSError:
+                return None
+        token = tuple(stamp(path) for path in paths)
+        if self._cal_cache is not None and token == self._cal_cache_token:
             return self._cal_cache
         dates = self.history.distinct_dates()
-        extra: set[str] = set()
-        cal_path = self.root / "trade_cal.csv"
+        days = {day: 1 for day in dates}
         if cal_path.exists():
             cal = pd.read_csv(cal_path, dtype=str, keep_default_na=False)
             if {"cal_date", "is_open"}.issubset(cal.columns):
-                open_rows = cal[cal["is_open"].astype(str).str.strip() == "1"]
-                extra = {str(d) for d in open_rows["cal_date"]}
-        merged = sorted(set(dates) | extra)
-        self._cal_cache = ensure_trade_cal(trading_calendar_df(merged))
+                for row in cal.itertuples(index=False):
+                    day, opened = str(row.cal_date), str(row.is_open).strip()
+                    if len(day) == 8 and day.isdigit() and opened in ("0", "1"):
+                        days[day] = int(opened)
+        if session_path.exists():
+            try:
+                with closing(sqlite3.connect(session_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
+                    rows = conn.execute("SELECT cal_date, is_open FROM calendar").fetchall()
+                for day, opened in rows:
+                    day = str(day)
+                    if len(day) == 8 and day.isdigit() and opened in (0, 1):
+                        days[day] = int(opened)
+            except (OSError, sqlite3.Error):
+                # The optional session cache may not have been initialised yet.
+                pass
+        ordered = sorted(days)
+        frame = trading_calendar_df(ordered)
+        frame["is_open"] = [days[day] for day in ordered]
+        self._cal_cache = ensure_trade_cal(frame)
+        self._cal_cache_token = token
         return self._cal_cache
 
     def trade_cal(

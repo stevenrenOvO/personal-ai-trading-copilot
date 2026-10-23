@@ -17,12 +17,22 @@ from __future__ import annotations
 
 import threading
 import time
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 MIN_ROWS_FOR_TODAY = 100          # a real session has thousands of bars
 FINAL_PHASES = ("收盘", "盘后")
+INDEX_CODES = ("000001.SH", "000300.SH", "000905.SH", "399001.SZ", "399006.SZ")
+_INCREMENTAL_INVALIDATE_SECONDS = 5.0
+_TAIL_RETRY_SECONDS = 21_600
 
 _state: dict[str, Any] = {"date": None, "running": False, "done": set()}
+_job_lock = threading.Lock()
+_state_lock = threading.RLock()
+_retry_after: dict[tuple[str, str], float] = {}
+_pending_memory: dict[str, dict] = {}
 _row_cache: dict[str, tuple[float, int]] = {}
 _ROW_CACHE_TTL = 240.0
 
@@ -56,6 +66,8 @@ def _invalidate(runtime: Any) -> None:
     try:
         runtime.analysis_cache.clear()
         runtime.context_cache.clear()
+        if hasattr(runtime.provider, "clear_cache"):
+            runtime.provider.clear_cache()
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -76,13 +88,14 @@ def ensure_today_bars(
     rows_on: Optional[Callable[[str], int]] = None,
     backfill: Optional[Callable[[str], dict]] = None,
     run_sync: bool = False,
-    max_gap_days: int = 10,
+    max_gap_days: int = 60,
 ) -> bool:
     """Backfill every missing recent trading day (at most once per run).
 
-    Self-healing: if the app was not opened for a few days, *all* the missing
-    sessions are filled, not just the current one. Days are processed oldest
-    first so a partial failure still leaves a contiguous history.
+    Latest confirmed gaps are filled first so current pages can become usable
+    while older history is still downloading. A day with enough stock coverage
+    remains explicitly partial when symbols are absent; those small tails get
+    a longer retry delay and cannot hold up a newer incomplete session.
     """
     from backend.data.providers.history import HistoryProvider
 
@@ -93,40 +106,189 @@ def ensure_today_bars(
             from backend.market.session import get_trading_session
 
             session = get_trading_session()
-        if session.phase() not in FINAL_PHASES:
-            return False                    # bars are not final during the session
+        phase = session.phase()
+        if phase == "未知":
+            return False
         day = session.current_trading_day()
     except Exception:  # noqa: BLE001
         return False
     if not day or _state["running"]:
         return False
 
-    counter = rows_on or _rows_on
-    missing = [
-        d
-        for d in _recent_open_days(session, day, max_gap_days)
-        if counter(d) < MIN_ROWS_FOR_TODAY
-    ]
-    if not missing:
-        _state["done"].add(day)
-        return False
-    if all(d in _state["done"] for d in missing):
-        return False                        # already attempted in this process
+    threshold = MIN_ROWS_FOR_TODAY
+    stock_codes: set[str] = set()
+    try:
+        basic = runtime.provider.stock_basic()
+        stock_codes = set(basic["ts_code"].dropna().astype(str))
+        threshold = max(threshold, int(len(stock_codes) * 0.90))
+    except Exception:
+        pass
+    history = getattr(runtime.provider, "history", None)
+    if rows_on is not None:
+        counter = rows_on
+    elif history is not None and stock_codes:
+        # Indices must not make an incomplete stock universe pass the gate.
+        counter = lambda target: len(stock_codes & history.codes_with_date(target))
+    elif history is not None:
+        counter = history.rows_on
+    else:
+        counter = _rows_on
+    root_key = str(history.db_path.resolve()) if history is not None else str(id(runtime.provider))
+    pending = dict(_pending_memory.get(root_key, {}))
+    if history is not None:
+        try:
+            saved = json.loads(history.get_state("auto_ingest_pending") or "{}")
+            if isinstance(saved, dict):
+                pending = {key: item for key, item in saved.items() if isinstance(item, dict)}
+        except (ValueError, OSError):
+            pass
+    recent = _recent_open_days(session, day, max_gap_days)
+    if phase not in FINAL_PHASES and phase != "休市":
+        recent = [d for d in recent if d < day]  # Only confirmed prior sessions.
+    def retry_due(target):
+        key = (root_key, target)
+        if key in _retry_after:
+            return time.monotonic() >= _retry_after[key]
+        retry_at = pending.get(target, {}).get("next_retry_at")
+        if retry_at:
+            try:
+                return time.time() >= datetime.fromisoformat(retry_at).timestamp()
+            except (TypeError, ValueError):
+                pass
+        return True
 
-    runner = backfill or _backfill_day
+    counts = {target: counter(target) for target in recent}
+    critical = [target for target in reversed(recent)
+                if counts[target] < threshold and retry_due(target)]
+    index_gaps: list[str] = []
+    if backfill is None and history is not None and recent:
+        index_rows = history.load(ts_codes=INDEX_CODES, start_date=min(recent), end_date=max(recent))
+        present = {target: set() for target in recent}
+        if not index_rows.empty:
+            for target, frame in index_rows.groupby("trade_date"):
+                present[str(target)] = set(frame["ts_code"].astype(str))
+        index_gaps = [target for target in reversed(recent)
+                      if len(present[target]) < len(INDEX_CODES) and retry_due(target)]
+    tails = [target for target in reversed(recent) if target in pending and retry_due(target)]
+    # Work on the newest incomplete universe before repairing small existing
+    # holes. An index-only pass can repair the market cards without refetching
+    # thousands of stocks whose suspensions/new listings legitimately lack bars.
+    mode = "stocks" if critical else "indices" if index_gaps else "tail"
+    missing = critical or index_gaps or tails
+    with _state_lock:
+        _state["threshold_rows"] = threshold
+        _state["priority_dates"] = list(missing)
+    if not missing:
+        return False
+    if not _job_lock.acquire(blocking=False):
+        return False
+    if backfill is not None:
+        runner = backfill
 
     def job() -> None:
         _state["running"] = True
-        try:
-            for target in missing:
-                runner(target)
+        if _state.get("root") != root_key:
+            _state["done"] = set()
+        _state["root"] = root_key
+        last_invalidated = time.monotonic()
+        last_written = 0
+        job_started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with _state_lock:
+            _state["progress"] = {"phase": "queued", "priority": mode,
+                "dates": list(missing), "processed": 0, "total": 0,
+                "downloaded": 0, "failed": 0, "stored_rows": 0,
+                "started_at": job_started_at, "updated_at": job_started_at}
+        def on_progress(payload):
+            nonlocal last_invalidated, last_written
+            progress = {**payload, "priority": mode, "dates": list(missing)}
+            with _state_lock:
+                _state["progress"] = progress
+            now = time.monotonic()
+            written = int(payload.get("stored_rows", 0))
+            if written > last_written and (now - last_invalidated >= _INCREMENTAL_INVALIDATE_SECONDS
+                                           or payload.get("phase") == "completed"):
+                _invalidate(runtime)
+                last_invalidated = now
+                last_written = written
+        def schedule_retry(target, details):
+            attempts = int(pending.get(target, {}).get("attempts", 0)) + 1
+            delay = min(21_600, 300 * (2 ** min(attempts - 1, 7)))
+            if counts.get(target, 0) >= threshold:
+                delay = max(delay, _TAIL_RETRY_SECONDS)
+            _retry_after[(root_key, target)] = time.monotonic() + delay
+            pending[target] = {**details, "attempts": attempts,
+                "next_retry_at": datetime.fromtimestamp(time.time() + delay, timezone.utc).isoformat(timespec="seconds")}
+        def finish_target(target, result):
+            counts[target] = counter(target)
+            if not result.get("failed", 0) and counts[target] >= threshold:
                 _state["done"].add(target)
-        except Exception:  # noqa: BLE001 - a failed ingest must not break serving
-            pass
+                _retry_after.pop((root_key, target), None)
+                pending.pop(target, None)
+            else:
+                schedule_retry(target, {"failed": result.get("failed", 0),
+                    "failed_codes": result.get("failed_codes", []),
+                    "rows": counts[target], "threshold_rows": threshold,
+                    "coverage_sufficient": counts[target] >= threshold})
+            _pending_memory[root_key] = dict(pending)
+            if history is not None:
+                history.set_state("auto_ingest_pending", json.dumps(pending))
+        job_error = None
+        try:
+            batch_results = {}
+            if backfill is None:
+                from backend.data.ingest_full import run_backfill
+                # A short window fits the vendor's bounded daily response.
+                # Download each stock once for several missing exchange days.
+                targets = set(INDEX_CODES) if mode == "indices" else stock_codes | set(INDEX_CODES)
+                codes = ",".join(sorted(targets))
+                batches = []
+                for day in missing:
+                    if (not batches or len(batches[-1]) >= 10 or
+                        abs((datetime.strptime(day, "%Y%m%d") - datetime.strptime(batches[-1][0], "%Y%m%d")).days) > 20):
+                        batches.append([])
+                    batches[-1].append(day)
+                for days in batches:
+                    days = sorted(days)
+                    last_written = 0
+                    try:
+                        result = run_backfill(start_date=days[0], end_date=days[-1], source="tencent",
+                            db_path=runtime.provider.history.db_path, report_every=1000,
+                            codes=codes, required_dates=days, progress_callback=on_progress,
+                            priority_codes=list(INDEX_CODES))
+                        for day in days:
+                            if mode == "indices":
+                                absent = sorted((stock_codes | set(INDEX_CODES)) - history.codes_with_date(day))
+                                batch_results[day] = {"failed": len(absent), "failed_codes": absent[:20]}
+                            else:
+                                batch_results[day] = result.get("failures_by_date", {}).get(day,
+                                    {"failed": result.get("failed", 0), "failed_codes": result.get("failed_codes", [])})
+                    except Exception as exc:
+                        for day in days:
+                            batch_results[day] = {"failed": 1, "error": type(exc).__name__}
+                    for target in days:
+                        finish_target(target, batch_results[target])
+            else:
+                for target in missing:
+                    try:
+                        finish_target(target, runner(target) or {})
+                    except Exception as exc:
+                        schedule_retry(target, {"error": type(exc).__name__})
+                        _pending_memory[root_key] = dict(pending)
+                        if history is not None:
+                            history.set_state("auto_ingest_pending", json.dumps(pending))
+                        logging.getLogger(__name__).warning("Ingest failed for %s; retry scheduled", target)
+        except Exception as exc:  # noqa: BLE001 - a failed ingest must not break serving
+            job_error = type(exc).__name__
+            logging.getLogger(__name__).exception("Automatic history backfill interrupted")
         finally:
-            _state["running"] = False
-            _state["done"].add(day)
+            with _state_lock:
+                _state["running"] = False
+                _state["progress"] = {**_state.get("progress", {}),
+                    "phase": "error" if job_error else "retry_pending" if any(target in pending for target in missing) else "completed",
+                    "error": job_error,
+                    "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
             _invalidate(runtime)
+            _job_lock.release()
 
     if run_sync:
         job()
@@ -189,9 +351,29 @@ def HistoryProviderType():  # noqa: N802 - tiny helper to avoid a module import 
     return HistoryProvider
 
 
+def status(runtime):
+    pending = {}
+    history = getattr(runtime.provider, "history", None)
+    if history is not None:
+        pending = json.loads(history.get_state("auto_ingest_pending") or "{}")
+        if not isinstance(pending, dict):
+            raise ValueError("补数状态格式损坏")
+    root_key = str(history.db_path.resolve()) if history is not None else str(id(runtime.provider))
+    with _state_lock:
+        same_root = _state.get("root") == root_key
+        progress = dict(_state.get("progress", {})) if same_root else {}
+        return {"running": bool(_state["running"]) and same_root, "pending": pending,
+                "completed_this_process": sorted(_state["done"]) if same_root else [],
+                "progress": progress,
+                "threshold_rows": _state.get("threshold_rows") if same_root else None,
+                "priority_dates": list(_state.get("priority_dates", [])) if same_root else []}
+
+
 def reset_state() -> None:
     """Test helper: forget which days were attempted."""
-    _state["date"] = None
-    _state["running"] = False
-    _state["done"] = set()
+    with _state_lock:
+        _state.clear()
+        _state.update({"date": None, "running": False, "done": set()})
     _row_cache.clear()
+    _retry_after.clear()
+    _pending_memory.clear()

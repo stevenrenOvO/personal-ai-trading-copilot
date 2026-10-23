@@ -256,6 +256,7 @@ class MarketEngine:
             daily,
             date,
             lambda day: self.provider.stk_limit(ts_codes=codes, trade_date=day),
+            trading_days=self.calendar.recent_trading_days(date, CONSECUTIVE_LIMIT_LOOKBACK_DAYS),
         )
         return max_height(heights)
 

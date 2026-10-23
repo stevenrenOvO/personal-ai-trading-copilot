@@ -9,9 +9,11 @@ real trading day from the exchange calendar and reports the session phase.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time as _time
 from datetime import date as _date, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Optional
 
 from backend.data.config import get_settings
@@ -46,12 +48,14 @@ class TradingSession:
         self.db_path = Path(db_path) if db_path is not None else base / "session.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._fetch = calendar_fetcher or _default_calendar_fetcher
-        self._now = now_fn or (lambda: datetime.now())
+        self._now = now_fn or (lambda: datetime.now(ZoneInfo("Asia/Shanghai")))
         self._blocked_until = 0.0
+        self._calendar_lock = threading.Lock()
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, timeout=30)
+        from backend.data.sqlite import connect
+        return connect(self.db_path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -63,18 +67,22 @@ class TradingSession:
     # -- calendar ------------------------------------------------------
     def _cached_month(self) -> Optional[str]:
         with self._connect() as conn:
-            row = conn.execute("SELECT value FROM meta WHERE key='month'").fetchone()
-        return row[0] if row else None
+            values = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('month', 'window')").fetchall())
+        return values.get("month") if values.get("window") == "120" else None
 
     def ensure_calendar(self, today: Optional[_date] = None) -> bool:
         """Make sure the exchange calendar covers the current month."""
+        with self._calendar_lock:
+            return self._ensure_calendar(today)
+
+    def _ensure_calendar(self, today: Optional[_date] = None) -> bool:
         today = today or self._now().date()
         month_key = f"{today.year:04d}-{today.month:02d}"
         if self._cached_month() == month_key:
             return True
         if _time.time() < self._blocked_until:
             return False  # recent failure: don't hammer the vendor
-        start = (today - timedelta(days=15)).isoformat()
+        start = (today - timedelta(days=120)).isoformat()
         end = (today + timedelta(days=45)).isoformat()
         try:
             rows = self._fetch(start, end)
@@ -91,6 +99,7 @@ class TradingSession:
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('month', ?)", (month_key,)
             )
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('window', '120')")
         return True
 
     def current_trading_day(self) -> Optional[str]:
@@ -118,6 +127,10 @@ class TradingSession:
         now = self._now()
         day = now.strftime("%Y%m%d")
         trading = self.is_trading_day(day)
+        return self._phase_for(now, trading)
+
+    @staticmethod
+    def _phase_for(now: datetime, trading: Optional[bool]) -> str:
         if trading is None:
             return "未知"
         if not trading:
@@ -139,6 +152,21 @@ class TradingSession:
             return "收盘"
         return "盘后"
 
+    def describe_cached(self) -> dict[str, Any]:
+        """Read the calendar without triggering a vendor call on a page request."""
+        now = self._now()
+        today = now.strftime("%Y%m%d")
+        with self._connect() as conn:
+            row = conn.execute("SELECT is_open FROM calendar WHERE cal_date = ?", (today,)).fetchone()
+            current = conn.execute("SELECT MAX(cal_date) FROM calendar WHERE is_open = 1 AND cal_date <= ?", (today,)).fetchone()
+            confirmed = conn.execute("SELECT MAX(cal_date) FROM calendar WHERE is_open = 1 AND cal_date < ?", (today,)).fetchone()
+        trading = bool(row[0]) if row else None
+        phase = self._phase_for(now, trading)
+        latest = current[0] if current else None
+        return {"now": now.isoformat(timespec="seconds"), "phase": phase,
+                "current_trading_day": latest, "is_trading_day": trading,
+                "expected_daily_date": latest if phase in ("收盘", "盘后", "休市") else (confirmed[0] if confirmed else None)}
+
     def describe(self) -> dict[str, Any]:
         now = self._now()
         return {
@@ -150,16 +178,19 @@ class TradingSession:
 
 
 _SESSION: Optional[TradingSession] = None
+_SESSION_LOCK = threading.Lock()
 
 
 def get_trading_session() -> TradingSession:
     global _SESSION
-    if _SESSION is None:
-        _SESSION = TradingSession()
-    return _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            _SESSION = TradingSession()
+        return _SESSION
 
 
 def set_trading_session(session: Optional[TradingSession]) -> None:
     """Override the process-wide session (used by tests)."""
     global _SESSION
-    _SESSION = session
+    with _SESSION_LOCK:
+        _SESSION = session

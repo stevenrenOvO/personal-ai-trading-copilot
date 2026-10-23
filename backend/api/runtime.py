@@ -1,13 +1,12 @@
 """Shared runtime state for the WSGI API.
 
-Selects the live provider when a valid Tushare token is configured and falls
-back to the fixture provider otherwise, so the dashboard remains usable
-offline without ever treating fixtures as production data.
+Prefers locally ingested real data and uses a lazy network fallback chain.
+Fixtures require an explicit demo setting and never enter production fallback.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +67,7 @@ class Runtime:
         )
         journal = TradeJournal(root)
         paper.journal = journal
+        paper.sync_journal()
 
         registry = StrategyRegistry(root)
         strong = StrongSectorBreakoutStrategy()
@@ -89,14 +89,58 @@ class Runtime:
             strategies=strategies,
         )
 
+    def account_snapshot(self, date: str | None = None):
+        """Value the shared account using quotes for the requested day or prior bars."""
+        import math
+        def valid_price(value):
+            try:
+                return not isinstance(value, bool) and math.isfinite(float(value)) and float(value) > 0
+            except (TypeError, ValueError):
+                return False
+        codes = [code for code, p in self.paper.snapshot().positions.items() if p.quantity > 0]
+        prices = {}
+        price_dates = {}
+        sources = {}
+        if codes:
+            if date is None:
+                from backend.market.session import get_trading_session
+                date = get_trading_session().current_trading_day()
+            try:
+                frame = self.provider.daily(ts_codes=codes, end_date=date)
+                if not frame.empty:
+                    frame = frame[frame["ts_code"].isin(codes) & (frame["trade_date"].astype(str) <= date) & frame["close"].map(valid_price)]
+                    last = frame.sort_values("trade_date").groupby("ts_code").tail(1).set_index("ts_code")
+                    prices = last["close"].to_dict()
+                    price_dates = last["trade_date"].astype(str).to_dict()
+                    sources = {code: getattr(self.provider, "name", "unknown") for code in prices}
+            except Exception:
+                pass
+            try:
+                from backend.market.quote_service import get_quote_service
+                frame, meta = get_quote_service().get()
+                quote_date = getattr(meta, "quote_date", None) or str(meta.quote_time or "")[:8]
+                if not meta.is_stale and quote_date and date and quote_date <= date and not frame.empty:
+                    frame = frame[frame["ts_code"].isin(codes) & frame["price"].map(valid_price)]
+                    frame = frame[frame["ts_code"].map(lambda code: quote_date >= price_dates.get(code, ""))]
+                    prices.update(frame.set_index("ts_code")["price"].to_dict())
+                    for code in frame["ts_code"]:
+                        price_dates[code] = quote_date
+                        sources[code] = meta.source
+            except Exception:
+                pass
+        prices = {code: float(price) for code, price in prices.items()
+                  if valid_price(price)}
+        snapshot = self.paper.snapshot(prices)
+        codes = [code for code, position in snapshot.positions.items() if position.quantity > 0]
+        return replace(snapshot, valuation={"requested_date": date,
+            "prices": prices, "price_dates": price_dates, "sources": sources,
+            "missing_codes": [code for code in codes if code not in prices],
+            "older_price_codes": [code for code in prices if price_dates.get(code) != date]})
+
     @classmethod
     def _choose_provider(cls, settings, root: Path) -> DataProvider:
-        if settings.has_tushare_token:
-            try:
-                return TushareProvider(token=settings.tushare_token)
-            except Exception:
-                # Never leak the token; fall back to free/local sources.
-                pass
+        if getattr(settings, "demo_mode", False):
+            return FixtureProvider(base_dir=settings.fixture_dir)
 
         # 1. Full-market daily history (SQLite): the only local store that can
         #    answer market-wide breadth, limit-board and sector questions.
@@ -111,24 +155,14 @@ class Runtime:
             except Exception:
                 pass
 
-        # 3. Free network providers, then test fixtures. These are wrapped so
+        # 3. Network providers. Production never falls back to test fixtures.
         #    that choosing the chain never opens a vendor connection: a missing
         #    local store must not cost a 25s login timeout at start-up.
-        try:
-            return FallbackProvider(
-                [
-                    LazyProvider(BaoStockProvider, name="baostock"),
-                    LazyProvider(AkShareProvider, name="akshare"),
-                    LazyProvider(
-                        lambda: FixtureProvider(base_dir=settings.fixture_dir),
-                        name="fixture",
-                    ),
-                ]
-            )
-        except Exception:
-            pass
-
-        return FixtureProvider(base_dir=settings.fixture_dir)
+        chain = [LazyProvider(BaoStockProvider, name="baostock"),
+                 LazyProvider(AkShareProvider, name="akshare")]
+        if settings.has_tushare_token:
+            chain.insert(0, LazyProvider(lambda: TushareProvider(token=settings.tushare_token), name="tushare"))
+        return FallbackProvider(chain)
 
     @classmethod
     def _history_provider(cls, root: Path) -> Optional[HistoryProvider]:
@@ -145,7 +179,11 @@ class Runtime:
             else:
                 fallback = None
             provider = HistoryProvider(base_dir=root, fallback=fallback)
-            if provider.coverage().get("codes", 0) < MIN_FULL_MARKET_CODES:
+            # A newly initialized catalog may have no bars yet. Select it for
+            # resumable background ingestion; API coverage gates still prevent
+            # partial data from being presented as a market-wide conclusion.
+            if (provider.coverage().get("codes", 0) < MIN_FULL_MARKET_CODES
+                    and len(provider.stock_basic()) < MIN_FULL_MARKET_CODES):
                 return None
             return provider
         except Exception:

@@ -1,0 +1,8 @@
+# Direct runtime dependencies; tested on Windows with Python 3.13.
+numpy==2.4.6
+pandas==3.0.5
+python-dotenv==1.2.3
+requests==2.34.2
+tushare==1.4.29
+baostock==0.9.3
+akshare==1.18.94

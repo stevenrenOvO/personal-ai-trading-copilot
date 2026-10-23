@@ -19,6 +19,7 @@ class PaperPosition:
     avg_price: float = 0.0
     realized_pnl: float = 0.0
     buy_date: str = ""
+    buy_lots: list[dict[str, Any]] = field(default_factory=list)
 
     def market_value(self, price: float) -> float:
         return self.quantity * price
@@ -38,6 +39,7 @@ class PaperPosition:
         self.quantity += quantity
         if quantity > 0:
             self.buy_date = trade_date
+            self.buy_lots.append({"date": trade_date, "quantity": quantity})
         if self.quantity > 0:
             self.avg_price = (old_cost + new_cost) / self.quantity
 
@@ -58,6 +60,12 @@ class PaperPosition:
         realized = quantity * (price - self.avg_price) - commission
         self.quantity -= quantity
         self.realized_pnl += realized
+        remaining = quantity
+        for lot in sorted(self.buy_lots, key=lambda item: item["date"]):
+            used = min(remaining, lot["quantity"])
+            lot["quantity"] -= used
+            remaining -= used
+        self.buy_lots = [lot for lot in self.buy_lots if lot["quantity"] > 0]
         if self.quantity <= 0:
             self.avg_price = 0.0
         return realized
@@ -80,6 +88,10 @@ class PaperOrder:
     commission: float = 0.0
     status: str = "FILLED"
     reason: str = ""
+    signal_id: str = ""
+    pnl: float | None = None
+    return_pct: float | None = None
+    holding_days: float | None = None
 
     @property
     def gross_value(self) -> float:
@@ -98,6 +110,10 @@ class PaperSnapshot:
     equity: float
     realized_pnl: float
     orders: tuple[PaperOrder, ...] = field(default_factory=tuple)
+    peak_equity: float = 0.0
+    version: int = 0
+    journal_pending: bool = False
+    valuation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,4 +124,8 @@ class PaperSnapshot:
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
             "orders": [order.to_dict() for order in self.orders],
+            "peak_equity": self.peak_equity,
+            "version": self.version,
+            "journal_pending": self.journal_pending,
+            "valuation": self.valuation,
         }

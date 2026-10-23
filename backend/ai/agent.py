@@ -32,12 +32,14 @@ class AICopilot:
         provider: Optional[DataProvider] = None,
         strategy: Optional[Strategy] = None,
         context_cache: Optional[object] = None,
+        runtime: Optional[object] = None,
     ) -> None:
         self.provider = provider
         self.strategy = strategy
         # Building the context runs the whole engine stack; the API layer hands
         # in a short-TTL cache so repeated questions do not rescan the market.
         self._context_cache = context_cache
+        self.runtime = runtime
         self._tools: dict[str, Callable[..., Any]] = {}
         self._register_tools()
 
@@ -58,16 +60,26 @@ class AICopilot:
 
     def _ctx(self, date: str) -> dict[str, Any]:
         if self._context_cache is None:
-            return build_context(date, provider=self.provider, strategy=self.strategy)
+            return build_context(date, provider=self.provider, strategy=self.strategy, runtime=self.runtime)
+        paper = getattr(self.runtime, "paper", None)
+        version = paper.snapshot().version if paper is not None else 0
         return self._context_cache.get_or_compute(
-            ("ai_context", date),
+            ("ai_context", date, version),
             lambda: build_context(
-                date, provider=self.provider, strategy=self.strategy
+                date, provider=self.provider, strategy=self.strategy, runtime=self.runtime
             ),
         )
 
     def get_market_state(self, date: str) -> ToolResult:
-        return ToolResult("get_market_state", self._ctx(date)["market"])
+        ctx = self._ctx(date)
+        market = dict(ctx["market"])
+        meta = ctx.get("data_meta", {}).get("market", {})
+        plan = ctx.get("trade_plan", {})
+        market.update(source=meta.get("source"),
+            data_kind="日线统计" if meta.get("kind") in ("historical", "historical_scan") else "行情快照",
+            analysis_basis_date=plan.get("basis_date") or plan.get("date"),
+            can_attack=self._trade_permission(ctx), attack_note=plan.get("attack_note", ""))
+        return ToolResult("get_market_state", market)
 
     def get_emotion_state(self, date: str) -> ToolResult:
         return ToolResult("get_emotion_state", self._ctx(date)["emotion"])
@@ -76,7 +88,11 @@ class AICopilot:
         return ToolResult("get_sector_strength", self._ctx(date)["sectors"])
 
     def get_opportunities(self, date: str) -> ToolResult:
-        return ToolResult("get_opportunities", self._ctx(date)["opportunities"])
+        ctx = self._ctx(date)
+        plan = dict(ctx.get("trade_plan") or {})
+        plan.update(requested_date=date, basis_date=plan.get("basis_date") or plan.get("date"),
+            can_attack=self._trade_permission(ctx), source="机会页交易计划")
+        return ToolResult("get_opportunities", plan)
 
     def get_board_environment(self, date: str) -> ToolResult:
         return ToolResult("get_board_environment", self._ctx(date)["board"])
@@ -110,9 +126,17 @@ class AICopilot:
     def daily_briefing(self, date: str) -> dict[str, Any]:
         """Data-grounded daily briefing without any LLM dependency."""
         ctx = self._ctx(date)
+        current_basis = ctx["emotion"].get("date") == date
+        permission = self._trade_permission(ctx)
+        plan = ctx.get("trade_plan", {})
         return {
             "date": date,
-            "can_trade_today": self._can_trade_today(ctx),
+            "basis_date": ctx["emotion"].get("date"),
+            "basis_note": ctx["emotion"].get("basis_note", ""),
+            "can_trade_today": permission,
+            "attack_note": plan.get("attack_note", ""),
+            "market_source": ctx.get("data_meta", {}).get("market", {}).get("source"),
+            "analysis_basis_date": plan.get("basis_date") or plan.get("date"),
             "emotion": ctx["emotion"]["emotion_cycle"],
             "top_sectors": [
                 {"name": s["name"], "score": s["score"]} for s in ctx["sectors"][:3]
@@ -122,17 +146,19 @@ class AICopilot:
                     "ts_code": o["ts_code"],
                     "name": o["name"],
                     "score": o["score"],
-                    "suggested_action": o["suggested_action"],
-                    "reason": o["stock_reason"],
+                    "suggested_action": o.get("state", "观察"),
+                    "tier": o.get("tier", ""),
+                    "reason": o.get("why_not_buy") or "；".join(o.get("reasons", [])),
                 }
-                for o in ctx["opportunities"][:5]
+                for o in ([item for item in plan.get("plans", []) if item.get("tier") in ("A", "B")][:5]
+                          if current_basis and permission is not None else [])
             ],
             "risk": ctx["risk"],
             "board": {
                 "grade": ctx["board"]["grade"],
                 "limit_up_count": ctx["board"]["limit_up_count"],
             },
-            "recommended_exposure": ctx["emotion"]["recommended_exposure"],
+            "recommended_exposure": plan.get("total_exposure_cap") if current_basis and permission is not None else None,
         }
 
     def ask(self, query: str, date: str) -> dict[str, Any]:
@@ -152,10 +178,12 @@ class AICopilot:
             result = self.get_risk_status(date)
         elif any(k in q for k in ("持仓", "position")):
             result = self.get_positions(date)
-        elif any(k in q for k in ("交易", "trade", "history")):
-            result = self.get_trade_history(date)
         elif any(k in q for k in ("审计", "audit")):
             result = self.audit_trade(date)
+        elif any(k in q for k in ("策略", "健康", "strategy")):
+            result = self.get_strategy_health(date)
+        elif any(k in q for k in ("交易", "trade", "history")):
+            result = self.get_trade_history(date)
         elif any(k in q for k in ("画像", "profile")):
             result = self.get_personal_profile(date)
         else:
@@ -173,18 +201,33 @@ class AICopilot:
         }
 
     def _can_trade_today(self, ctx: dict[str, Any]) -> bool:
+        return self._trade_permission(ctx) is True
+
+    def _trade_permission(self, ctx: dict[str, Any]) -> Optional[bool]:
+        """Unknown current structures must not be represented as a negative signal."""
         market = ctx["market"]
         emotion = ctx["emotion"]
-        if market["state"] in ("数据不足", "冰点"):
+        if emotion.get("date") != ctx["date"]:
+            return None
+        if "trade_plan" in ctx:
+            plan = ctx["trade_plan"]
+            meta = ctx.get("data_meta", {}).get("trade_plan", {})
+            if (plan.get("date") != ctx["date"] or plan.get("available") is False or "can_attack" not in plan
+                    or plan.get("historical_only") or meta.get("status") in ("no_data", "warming", "error")):
+                return None
+            return bool(plan.get("can_attack"))
+        if market["state"] in ("数据不足", "数据准备中", "当日数据准备中"):
+            return None
+        if market["state"] == "冰点":
             return False
         if emotion["emotion_cycle"] in ("冰点", "退潮"):
             return False
         return market["score"] >= 45
 
     def _llm_available(self) -> bool:
-        return bool(os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"))
+        return False  # Availability requires an implemented backend, not just a key.
 
     def _llm_fallback(self, query: str, date: str) -> str:
         if not self._llm_available():
-            return "AI unavailable: 未配置 LLM API Key，无法进行开放式问答。请使用结构化工具查询市场/情绪/板块/机会/风险/持仓等。"
+            return "当前版本尚未接入开放式问答后端。请使用结构化查询：市场、情绪、板块、机会、风险、持仓、交易记录等。"
         return "Data unavailable: LLM 后端未实现或不可用。"

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import uuid
+import hashlib
+import logging
 from datetime import datetime, timezone
 from urllib.parse import parse_qs
 from typing import Any, Optional
 
 from backend.ai.agent import AICopilot
 from backend.api.runtime import Runtime
+from backend.api.data_status import date_status
 from backend.backtest.ashare_engine import AShareBacktestEngine
 from backend.backtest.metrics import calculate_metrics
 from backend.board.engine import BoardEngine
@@ -38,8 +42,16 @@ from backend.strategies.base import TradeSignal
 
 
 def _json(status: str, data: dict) -> tuple[str, list, bytes]:
+    def clean(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [clean(item) for item in value]
+        return value
     return status, [("Content-Type", "application/json; charset=utf-8")], json.dumps(
-        data, ensure_ascii=False
+        clean(data), ensure_ascii=False, allow_nan=False
     ).encode("utf-8")
 
 
@@ -50,37 +62,93 @@ def _query(environ: dict) -> dict[str, str]:
 
 
 def _body(environ: dict) -> dict:
-    try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
-        raw = environ["wsgi.input"].read(length).decode("utf-8")
-        return json.loads(raw) if raw else {}
-    except Exception:
-        return {}
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    if length < 0 or length > 1_048_576:
+        raise ValueError("请求体大小无效（上限 1 MB）")
+    raw = environ["wsgi.input"].read(length).decode("utf-8")
+    def invalid_constant(value):
+        raise ValueError(f"非法数值: {value}")
+    data = json.loads(raw, parse_constant=invalid_constant) if raw else {}
+    if not isinstance(data, dict):
+        raise ValueError("请求体必须为 JSON 对象")
+    return data
 
 
 def _date(environ: dict, runtime: Runtime | None = None, default: str = "20240103") -> str:
     q = _query(environ)
     if "date" in q:
+        _validate_date(q["date"])
         return q["date"]
     if runtime is not None:
-        latest = _latest_date(runtime)
+        from backend.api.data_status import display_dates
+        latest = display_dates(runtime).get("date")
         if latest:
             return latest
     return default
+
+
+def _validate_date(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{8}", value):
+        raise ValueError("日期格式须为 YYYYMMDD")
+    datetime.strptime(value, "%Y%m%d")
+    return value
+
+
+def _validate_trade(data, *, paper=False):
+    if not isinstance(data.get("ts_code"), str) or not re.fullmatch(r"\d{6}\.(SH|SZ|BJ)", data["ts_code"]):
+        raise ValueError("请填写有效股票代码，如 000001.SZ")
+    actions = ("BUY", "SELL") if paper else ("BUY", "SELL", "HOLD", "WAIT", "MISSED_SIGNAL")
+    if data.get("action", "BUY") not in actions:
+        raise ValueError("交易动作无效")
+    for name in ("price", "quantity", "position_before", "position_after", "strength"):
+        value = data.get(name)
+        if name == "price" and value == "":
+            data[name] = None
+            continue
+        if value is not None and value != "":
+            if isinstance(value, bool):
+                raise ValueError(f"{name} 不能为布尔值")
+            try:
+                number = float(value)
+            except OverflowError as exc:
+                raise ValueError(f"{name} 数值超出可用范围") from exc
+            if not math.isfinite(number) or number < 0 or (name == "price" and number <= 0):
+                raise ValueError(f"{name} 必须为有效正值")
+            data[name] = number
+    if "trade_date" in data and data["trade_date"] not in (None, ""):
+        _validate_date(data["trade_date"])
+    elif "trade_date" in data:
+        data["trade_date"] = ""
+    for name in ("symbol", "strategy_id", "strategy_version", "signal_id", "market_state",
+                 "emotion_state", "sector_state", "stock_state", "system_recommendation",
+                 "user_reason", "execution_reason", "reason"):
+        if name in data and (not isinstance(data[name], str) or len(data[name]) > 4000):
+            raise ValueError(f"{name} 必须为不超过 4000 字的文本")
+    result = data.get("result")
+    if result is not None:
+        if not isinstance(result, dict):
+            raise ValueError("result 必须为对象")
+        for name in ("pnl", "return_pct", "holding_days"):
+            if result.get(name) is not None:
+                if isinstance(result[name], bool):
+                    raise ValueError(f"result.{name} 必须为有限数值")
+                try:
+                    result[name] = float(result[name])
+                except OverflowError as exc:
+                    raise ValueError(f"result.{name} 数值超出可用范围") from exc
+                if not math.isfinite(result[name]):
+                    raise ValueError(f"result.{name} 必须为有限数值")
+                if name == "holding_days" and result[name] < 0:
+                    raise ValueError("持有天数不可为负数")
+    if paper and (data.get("price") in (None, "") or data.get("quantity") in (None, "")
+                  or float(data["quantity"]) <= 0 or not float(data["quantity"]).is_integer()):
+        raise ValueError("模拟交易必须填写正价格与正整数数量")
 
 
 def dispatch(environ: dict, start_response, runtime: Runtime) -> bool:
     path = environ.get("PATH_INFO", "")
     method = environ.get("REQUEST_METHOD", "GET")
     q = _query(environ)
-
-    # 收盘后自动补当天日线（每天一次、后台执行、不阻塞请求）。
-    try:
-        from backend.data.auto_ingest import ensure_today_bars
-
-        ensure_today_bars(runtime)
-    except Exception:  # noqa: BLE001 - ingestion must never break serving
-        pass
 
     handlers: dict[str, Any] = {
         "GET /market/state": lambda: _market(environ, runtime),
@@ -105,12 +173,21 @@ def dispatch(environ: dict, start_response, runtime: Runtime) -> bool:
         "POST /paper/trade": lambda: _post_paper_trade(environ, runtime),
         "GET /data/latest": lambda: _data_latest(runtime),
         "GET /data/history/dates": lambda: _data_history_dates(runtime),
+        "GET /data/ingest/status": lambda: _ingest_status(runtime),
         "GET /ai/copilot": lambda: _ai_copilot(environ, runtime),
     }
 
     key = f"{method} {path}"
     if key in handlers:
-        status, headers, body = handlers[key]()
+        try:
+            from backend.data.auto_ingest import ensure_today_bars
+            ensure_today_bars(runtime)
+        except Exception:
+            pass
+        try:
+            status, headers, body = handlers[key]()
+        except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+            status, headers, body = _json("400 Bad Request", {"status": "error", "detail": str(exc)})
         start_response(status, headers)
         return body, True
 
@@ -126,23 +203,35 @@ def dispatch(environ: dict, start_response, runtime: Runtime) -> bool:
 def _market(environ, runtime: Runtime):
     date = _date(environ, runtime)
     latest = _latest_date(runtime)
-    # The live snapshot only describes the CURRENT trading day. Using it for any
-    # other date would mislabel today's data with an old date.
-    if latest and date == latest:
-        df, meta = get_quote_service().get()
-        if not df.empty:
-            state = compute_full_market_state(df, date)
-            return _json("200 OK", {"status": "ok", "data": state.to_dict(), "meta": _snapshot_meta(meta)})
+    df, meta = get_quote_service().get()
+    if _snapshot_matches(df, meta, date, runtime):
+        state = compute_full_market_state(df, date)
+        payload = state.to_dict()
+        metadata = _snapshot_meta(meta)
+        if not _local_history_gap(runtime, date):
+            structure = _market_state(runtime, date)
+            for field in ("max_consecutive_up", "yesterday_limit_up_performance", "index_pct"):
+                payload[field] = getattr(structure, field)
+            metadata.update(structural_date=date, structural_source="local_history")
+        return _json("200 OK", {"status": "ok", "data": payload, "meta": metadata})
+    if latest and date == latest and not date_status(runtime, date)["complete"]:
         # Snapshot not ready yet: say so explicitly instead of silently using
         # a different (CSI300) data source.
         state = MarketState(date=date, state="数据准备中", confidence=0.0, risk_level="high")
-        return _json("200 OK", {"status": "ok", "data": state.to_dict(), "meta": _snapshot_meta(meta)})
+        payload = state.to_dict()
+        payload.update(available=False, score=None, recommended_exposure=None)
+        return _json("200 OK", {"status": "ok", "data": payload, "meta": _snapshot_meta(meta, requested_date=date, unavailable=True)})
     state = _market_state(runtime, date)
-    return _json("200 OK", {"status": "ok", "data": state.to_dict(), "meta": _historical_meta(date)})
+    payload = state.to_dict()
+    if state.state == "数据不足":
+        payload.update(available=False, score=None, recommended_exposure=None)
+    return _json("200 OK", {"status": "ok", "data": payload, "meta": _historical_meta(date, runtime=runtime)})
 
 
 def _market_state(runtime: Runtime, date: str):
     """Full-market state for one day, memoised on the runtime."""
+    if _local_history_gap(runtime, date) or (runtime.provider.name == "storage" and len(runtime.provider.stock_basic()) < 1000):
+        return MarketState(date=date, state="数据不足", confidence=0.0, risk_level="high")
     return runtime.analysis_cache.get_or_compute(
         ("market", date),
         lambda: MarketEngine(runtime.provider).calculate(date),
@@ -168,6 +257,8 @@ def _sector_scores(runtime: Runtime, date: str, top: int | None = 5):
     The opportunity engine needs the *whole* ranking to know a stock's sector
     rank, while the dashboard shows the top few -- one computation serves both.
     """
+    if _local_history_gap(runtime, date):
+        return []
     ranked = runtime.analysis_cache.get_or_compute(
         ("sectors", date),
         lambda: SectorEngine(runtime.provider).ranked(date),
@@ -192,6 +283,9 @@ def _board_state(runtime: Runtime, date: str, market=None, emotion=None):
 
 def _ladder_snapshot(runtime: Runtime, date: str):
     """Limit-up ladder / leader structure / yesterday premium for one day."""
+    if _local_history_gap(runtime, date):
+        from backend.board.ladder import LadderSnapshot
+        return LadderSnapshot(date=date, available=False, notes=("当日行情覆盖不足",))
     return runtime.analysis_cache.get_or_compute(
         ("ladder", date),
         lambda: LimitLadderEngine(runtime.provider).snapshot(date),
@@ -201,7 +295,7 @@ def _ladder_snapshot(runtime: Runtime, date: str):
 def _board_ladder(environ, runtime: Runtime):
     date = _date(environ, runtime)
     snapshot = _ladder_snapshot(runtime, date)
-    meta = _historical_meta(date, kind="historical_scan")
+    meta = _historical_meta(date, kind="historical_scan", runtime=runtime)
     if not snapshot.available:
         meta["status"] = "no_data"
         meta["error"] = "；".join(snapshot.notes) or "该交易日无本地数据"
@@ -246,18 +340,18 @@ def _emotion(environ, runtime: Runtime):
     basis = date
     basis_note = None
     if _local_history_gap(runtime, date):
-        fallback = _history_latest_date()
+        fallback = _history_latest_date(runtime, before=date)
         if fallback:
             basis = fallback
             basis_note = (
-                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                 f"情绪阶段基于最近确认交易日 {fallback} 的真实结构"
             )
     ladder = _ladder_snapshot(runtime, basis)
     market = _market_state(runtime, basis)
     state = _emotion_state(runtime, basis, market, ladder)
     payload = state.to_dict()
-    meta = _historical_meta(basis)
+    meta = _historical_meta(basis, runtime=runtime)
     if basis_note:
         meta["status"] = "no_data"
         meta["error"] = basis_note
@@ -269,17 +363,17 @@ def _sectors(environ, runtime: Runtime):
     date = _date(environ, runtime)
     top = int(_query(environ).get("top", 5))
     latest = _latest_date(runtime)
-    if latest and date == latest:
-        df, meta = get_quote_service().get()
-        if not df.empty:
-            industry = _industry_map(runtime)
-            sectors = compute_full_market_sectors(df, industry)[:top]
-            return _json("200 OK", {"status": "ok", "data": sectors, "meta": _snapshot_meta(meta)})
-        return _json("200 OK", {"status": "ok", "data": [], "meta": _snapshot_meta(meta)})
+    df, meta = get_quote_service().get()
+    if _snapshot_matches(df, meta, date, runtime):
+        industry = _industry_map(runtime)
+        sectors = compute_full_market_sectors(df, industry)[:top]
+        return _json("200 OK", {"status": "ok", "data": sectors, "meta": _snapshot_meta(meta)})
+    if latest and date == latest and not date_status(runtime, date)["complete"]:
+        return _json("200 OK", {"status": "ok", "data": [], "meta": _snapshot_meta(meta, requested_date=date, unavailable=True)})
     sectors = _sector_scores(runtime, date, top)
     return _json(
         "200 OK",
-        {"status": "ok", "data": [s.to_dict() for s in sectors], "meta": _historical_meta(date)},
+        {"status": "ok", "data": [s.to_dict() for s in sectors], "meta": _historical_meta(date, runtime=runtime)},
     )
 
 
@@ -290,13 +384,13 @@ def _opportunities(environ, runtime: Runtime):
         # the daily-bar strategy cannot be evaluated at all. Rather than an
         # empty list that reads like a market verdict, show the most recent
         # completed day and label exactly which day that is.
-        fallback = _history_latest_date()
+        fallback = _history_latest_date(runtime, before=date)
         if fallback and fallback != date:
             opps = _scan_opportunities(runtime, fallback)
-            meta = _historical_meta(fallback, kind="historical_scan")
+            meta = _historical_meta(fallback, kind="historical_scan", runtime=runtime)
             meta["status"] = "no_data"
             meta["error"] = (
-                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                 f"以下为最近交易日 {fallback} 的机会"
             )
             return _json(
@@ -309,10 +403,10 @@ def _opportunities(environ, runtime: Runtime):
                 "status": "ok",
                 "data": [],
                 "meta": {
-                    **_historical_meta(date, kind="historical_scan"),
+                    **_historical_meta(date, kind="historical_scan", runtime=runtime),
                     "status": "no_data",
                     "error": (
-                        f"该交易日尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                        f"该交易日尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                         "无法计算当日机会；请选择已有数据的交易日"
                     ),
                 },
@@ -324,7 +418,7 @@ def _opportunities(environ, runtime: Runtime):
         {
             "status": "ok",
             "data": [o.to_dict() for o in opps],
-            "meta": _historical_meta(date, kind="historical_scan"),
+            "meta": _historical_meta(date, kind="historical_scan", runtime=runtime),
         },
     )
 
@@ -377,7 +471,7 @@ def _trade_plan(runtime: Runtime, date: str):
 
     def build():
         setups = _typed_opportunities(runtime, date)
-        snapshot = runtime.paper.snapshot()
+        snapshot = runtime.account_snapshot(date)
         profile = runtime.profile.load_or_create()
         config = getattr(profile, "config", None)
         max_weight = float(getattr(config, "max_position_weight", 0.20) or 0.20)
@@ -393,23 +487,32 @@ def _trade_plan(runtime: Runtime, date: str):
             },
         )
 
-    return runtime.analysis_cache.get_or_compute(("plan", date), build)
+    return runtime.analysis_cache.get_or_compute(("plan", date, runtime.paper.snapshot().version), build)
 
 
 def _opportunity_plan(environ, runtime: Runtime):
     date = _date(environ, runtime)
     if _local_history_gap(runtime, date):
-        fallback = _history_latest_date()
+        fallback = _history_latest_date(runtime, before=date)
         if fallback and fallback != date:
             plan = _trade_plan(runtime, fallback)
-            meta = _historical_meta(fallback, kind="historical_scan")
+            meta = _historical_meta(fallback, kind="historical_scan", runtime=runtime)
             meta["status"] = "no_data"
             meta["error"] = (
-                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                 f"以下为最近交易日 {fallback} 的交易计划"
             )
+            payload = plan.to_dict()
+            payload.update(requested_date=date, basis_date=fallback, historical_only=True,
+                can_attack=False, max_new_positions=0, available_exposure=0,
+                attack_note=f"仅供 {fallback} 历史复盘，不能作为 {date} 的执行计划")
+            for item in payload.get("plans", []):
+                item["historical_only"] = True
+                if isinstance(item.get("position"), dict):
+                    item["position"].update(shares=0, lots=0, amount=0, suggested_weight=0,
+                        note="当日结构未确认，历史计划不可执行")
             return _json(
-                "200 OK", {"status": "ok", "data": plan.to_dict(), "meta": meta}
+                "200 OK", {"status": "ok", "data": payload, "meta": meta}
             )
         return _json(
             "200 OK",
@@ -417,7 +520,7 @@ def _opportunity_plan(environ, runtime: Runtime):
                 "status": "ok",
                 "data": RankedPlan(date=date, available=False).to_dict(),
                 "meta": {
-                    **_historical_meta(date, kind="historical_scan"),
+                    **_historical_meta(date, kind="historical_scan", runtime=runtime),
                     "status": "no_data",
                     "error": f"本地历史不含 {date}，无法生成交易计划",
                 },
@@ -429,7 +532,7 @@ def _opportunity_plan(environ, runtime: Runtime):
         {
             "status": "ok",
             "data": plan.to_dict(),
-            "meta": _historical_meta(date, kind="historical_scan"),
+            "meta": _historical_meta(date, kind="historical_scan", runtime=runtime),
         },
     )
 
@@ -437,13 +540,13 @@ def _opportunity_plan(environ, runtime: Runtime):
 def _opportunity_setups(environ, runtime: Runtime):
     date = _date(environ, runtime)
     if _local_history_gap(runtime, date):
-        fallback = _history_latest_date()
+        fallback = _history_latest_date(runtime, before=date)
         if fallback and fallback != date:
             result = _typed_opportunities(runtime, fallback)
-            meta = _historical_meta(fallback, kind="historical_scan")
+            meta = _historical_meta(fallback, kind="historical_scan", runtime=runtime)
             meta["status"] = "no_data"
             meta["error"] = (
-                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                 f"以下为最近交易日 {fallback} 的机会识别结果"
             )
             return _json(
@@ -455,7 +558,7 @@ def _opportunity_setups(environ, runtime: Runtime):
                 "status": "ok",
                 "data": SetupResult(date=date, available=False).to_dict(),
                 "meta": {
-                    **_historical_meta(date, kind="historical_scan"),
+                    **_historical_meta(date, kind="historical_scan", runtime=runtime),
                     "status": "no_data",
                     "error": f"本地历史不含 {date}，无法识别机会类型",
                 },
@@ -467,7 +570,7 @@ def _opportunity_setups(environ, runtime: Runtime):
         {
             "status": "ok",
             "data": result.to_dict(),
-            "meta": _historical_meta(date, kind="historical_scan"),
+            "meta": _historical_meta(date, kind="historical_scan", runtime=runtime),
         },
     )
 
@@ -475,13 +578,13 @@ def _opportunity_setups(environ, runtime: Runtime):
 def _opportunity_candidates(environ, runtime: Runtime):
     date = _date(environ, runtime)
     if _local_history_gap(runtime, date):
-        fallback = _history_latest_date()
+        fallback = _history_latest_date(runtime, before=date)
         if fallback and fallback != date:
             pool = _candidate_pool(runtime, fallback)
-            meta = _historical_meta(fallback, kind="historical_scan")
+            meta = _historical_meta(fallback, kind="historical_scan", runtime=runtime)
             meta["status"] = "no_data"
             meta["error"] = (
-                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage() or '—'}），"
+                f"{date} 的行情尚未落地到本地历史（本地覆盖 {_history_coverage(runtime) or '—'}），"
                 f"以下为最近交易日 {fallback} 的候选池"
             )
             return _json(
@@ -493,7 +596,7 @@ def _opportunity_candidates(environ, runtime: Runtime):
                 "status": "ok",
                 "data": CandidatePool(date=date, available=False).to_dict(),
                 "meta": {
-                    **_historical_meta(date, kind="historical_scan"),
+                    **_historical_meta(date, kind="historical_scan", runtime=runtime),
                     "status": "no_data",
                     "error": f"本地历史不含 {date}，无法构建候选池",
                 },
@@ -505,7 +608,7 @@ def _opportunity_candidates(environ, runtime: Runtime):
         {
             "status": "ok",
             "data": pool.to_dict(),
-            "meta": _historical_meta(date, kind="historical_scan"),
+            "meta": _historical_meta(date, kind="historical_scan", runtime=runtime),
         },
     )
 
@@ -528,10 +631,13 @@ def _scan_opportunities(runtime: Runtime, date: str):
     return runtime.analysis_cache.get_or_compute(("opportunities", date), build)
 
 
-def _history_latest_date() -> Optional[str]:
+def _history_latest_date(runtime: Runtime, before: str | None = None) -> Optional[str]:
     """Newest trading day the local store can answer for."""
-    info = _history_info()
-    return str(info["end"]) if info and info.get("end") else None
+    history = getattr(runtime.provider, "history", None)
+    if history is None:
+        return None
+    from backend.api.data_status import latest_complete
+    return latest_complete(runtime, before)
 
 
 def _local_history_gap(runtime: Runtime, date: str) -> bool:
@@ -540,28 +646,34 @@ def _local_history_gap(runtime: Runtime, date: str) -> bool:
 
     if not isinstance(runtime.provider, HistoryProvider):
         return False
-    return _history_rows_on(date) == 0
+    from backend.api.data_status import date_status
+    return not date_status(runtime, date)["complete"]
 
 
 def _board(environ, runtime: Runtime):
     date = _date(environ, runtime)
     latest = _latest_date(runtime)
-    if latest and date == latest:
-        df, meta = get_quote_service().get()
-        if not df.empty:
-            data = _full_market_board(date, df, runtime)
-            return _json("200 OK", {"status": "ok", "data": data, "meta": _snapshot_meta(meta)})
+    df, meta = get_quote_service().get()
+    if _snapshot_matches(df, meta, date, runtime):
+        data = _full_market_board(date, df, runtime)
+        return _json("200 OK", {"status": "ok", "data": data, "meta": _snapshot_meta(meta)})
+    if latest and date == latest and not date_status(runtime, date)["complete"]:
         return _json(
             "200 OK",
             {
                 "status": "ok",
                 "data": {"date": date, "grade": "—", "limit_up_count": None, "ladder_available": False,
                          "ladder_note": "当日数据准备中"},
-                "meta": _snapshot_meta(meta),
+                "meta": _snapshot_meta(meta, requested_date=date, unavailable=True),
             },
         )
+    if _local_history_gap(runtime, date):
+        return _json("200 OK", {"status": "ok", "data": {"date": date, "grade": "—", "available": False,
+            "score": None, "recommended_exposure": None, "limit_up_count": None,
+            "ladder_available": False, "ladder_note": "当日行情覆盖不足，不能生成涨停环境结论"},
+            "meta": _historical_meta(date, runtime=runtime)})
     env = _board_state(runtime, date)
-    return _json("200 OK", {"status": "ok", "data": env.to_dict(), "meta": _historical_meta(date)})
+    return _json("200 OK", {"status": "ok", "data": env.to_dict(), "meta": _historical_meta(date, runtime=runtime)})
 
 
 def _latest_date(runtime: Runtime) -> Optional[str]:
@@ -578,8 +690,16 @@ def _latest_date(runtime: Runtime) -> Optional[str]:
         return None
 
 
-def _snapshot_meta(meta) -> dict:
+def _snapshot_meta(meta, requested_date=None, unavailable=False) -> dict:
     payload = meta.to_dict()
+    if payload.get("error"):
+        payload["error"] = "行情数据源暂时不可用，请检查网络或稍后刷新；缓存行情不代表当前交易日"
+    if requested_date and payload.get("quote_date") != requested_date:
+        payload.update(status="no_data", is_stale=True, requested_date=requested_date,
+            error=f"{requested_date} 的行情尚未确认；缓存报价日期为 {payload.get('quote_date') or '未知'}")
+    elif unavailable:
+        payload.update(status="no_data", is_stale=True, requested_date=requested_date,
+            error=f"{requested_date} 行情快照覆盖不足，等待数据源更新")
     try:
         payload["session_phase"] = get_trading_session().phase()
     except Exception:
@@ -587,10 +707,16 @@ def _snapshot_meta(meta) -> dict:
     return payload
 
 
-def _historical_meta(date: str, kind: str = "historical") -> dict:
-    coverage = _history_coverage()
-    return {
-        "source": "local_history",
+def _snapshot_matches(frame, meta, date, runtime=None):
+    from backend.api.data_status import snapshot_available
+    return snapshot_available(runtime, frame, meta, date)
+
+
+def _historical_meta(date: str, kind: str = "historical", runtime: Runtime | None = None) -> dict:
+    coverage = _history_coverage(runtime)
+    payload = {
+        "source": ("local_history" if runtime and runtime.provider.name == "history" else runtime.provider.name if runtime else "unknown"),
+        "is_fixture": bool(runtime and runtime.provider.name == "fixture"),
         "kind": kind,
         "as_of": date,
         "quote_time": None,
@@ -601,39 +727,37 @@ def _historical_meta(date: str, kind: str = "historical") -> dict:
         "rows": None,
         "coverage": coverage,
     }
+    if runtime is not None and hasattr(runtime.provider, "history"):
+        from backend.api.data_status import date_status
+        status = date_status(runtime, date)
+        payload.update(requested_date=date, basis_date=date, rows=status["valid_rows"],
+                       coverage_ratio=status["coverage_ratio"])
+        if not status["complete"]:
+            payload.update(status="no_data", error=f"{date} 日线覆盖 {status['coverage_ratio']:.1%}，正在补齐，尚不能生成全市场结构结论")
+    return payload
 
 
 _HISTORY_INFO: Optional[tuple[float, Optional[dict]]] = None
 _COVERAGE_TTL_SECONDS = 300.0
 
 
-def _history_info() -> Optional[dict]:
+def _history_info(runtime: Runtime | None = None) -> Optional[dict]:
     """Cached coverage of the full-market history store.
 
     Cached for a few minutes only: backfilling more days while the server runs
     must not leave the banner lying about how far the local data reaches.
     """
-    global _HISTORY_INFO
-    now = time.monotonic()
-    if _HISTORY_INFO is not None and now - _HISTORY_INFO[0] < _COVERAGE_TTL_SECONDS:
-        return _HISTORY_INFO[1]
-
-    info: Optional[dict] = None
-    try:
-        from backend.data.history import MarketHistory
-
-        cov = MarketHistory().coverage()
-        if cov.get("start") and cov.get("end"):
-            info = cov
-    except Exception:  # noqa: BLE001
-        info = None
-    _HISTORY_INFO = (now, info)
-    return info
+    if runtime is None or not hasattr(runtime.provider, "history"):
+        return None
+    def compute():
+        cov = runtime.provider.history.coverage()
+        return cov if cov.get("start") and cov.get("end") else None
+    return runtime.analysis_cache.get_or_compute(("coverage",), compute)
 
 
-def _history_coverage() -> Optional[str]:
+def _history_coverage(runtime: Runtime | None = None) -> Optional[str]:
     """Human-readable coverage, for honest empty-state text."""
-    info = _history_info()
+    info = _history_info(runtime)
     if not info:
         return None
     return f"{info['start']}~{info['end']}，{info.get('codes', 0)} 个代码"
@@ -642,20 +766,11 @@ def _history_coverage() -> Optional[str]:
 _HISTORY_DAY_CACHE: dict[str, tuple[float, int]] = {}
 
 
-def _history_rows_on(date: str) -> int:
-    """How many bars the local store holds for one trading day (0 = not collected)."""
-    now = time.monotonic()
-    cached = _HISTORY_DAY_CACHE.get(date)
-    if cached is not None and now - cached[0] < _COVERAGE_TTL_SECONDS:
-        return cached[1]
-    try:
-        from backend.data.history import MarketHistory
-
-        rows = MarketHistory().rows_on(date)
-    except Exception:
-        rows = 0
-    _HISTORY_DAY_CACHE[date] = (now, rows)
-    return rows
+def _history_rows_on(date: str, runtime: Runtime) -> int:
+    if not hasattr(runtime.provider, "history"):
+        return 0
+    return runtime.analysis_cache.get_or_compute(("rows_on", date),
+        lambda: runtime.provider.history.rows_on(date))
 
 
 def _history_board_extras(runtime: Runtime, date: str) -> Optional[dict]:
@@ -666,7 +781,7 @@ def _history_board_extras(runtime: Runtime, date: str) -> Optional[dict]:
     ladder is computed from it and labelled as a local-history figure so it is
     never confused with the live snapshot.
     """
-    if _history_rows_on(date) < 100:
+    if _local_history_gap(runtime, date) or _history_rows_on(date, runtime) < 100:
         return None
     try:
         env = _board_state(runtime, date)
@@ -676,6 +791,7 @@ def _history_board_extras(runtime: Runtime, date: str) -> Optional[dict]:
         return None
     return {
         "ladder": env.ladder.to_dict(),
+        "emotion_cycle": env.emotion_cycle,
         "leader": env.leader,
         "leader_name": env.leader_name,
         "leader_height": env.leader_height,
@@ -704,29 +820,36 @@ def _industry_map(runtime: Runtime) -> dict[str, str]:
 
 def _full_market_board(date: str, df, runtime: Runtime | None = None) -> dict:
     extras = _history_board_extras(runtime, date) if runtime is not None else None
-    return compute_full_market_board_environment(df, date, history_extras=extras)
+    payload = compute_full_market_board_environment(df, date, history_extras=extras)
+    # Snapshot strength is not the confirmed structural emotion cycle.
+    payload["emotion_cycle"] = extras.get("emotion_cycle") if extras else None
+    payload["emotion_basis_date"] = date if extras else None
+    payload["emotion_source"] = "local_history" if extras else "unavailable"
+    return payload
 
 
 def _risk(environ, runtime: Runtime):
     date = _date(environ, runtime)
     market = _market_state(runtime, date)
     emotion = _emotion_state(runtime, date, market)
-    snapshot = runtime.paper.snapshot()
+    snapshot = runtime.account_snapshot(date)
     risk = DecisionRiskEngine().decide(
         RiskContext(
             equity=snapshot.equity,
             cash=snapshot.cash,
-            peak_equity=max(snapshot.equity, runtime.paper.initial_cash),
+            peak_equity=snapshot.peak_equity,
+            positions=snapshot.positions,
+            prices=snapshot.valuation.get("prices", {}),
         ),
         market=market,
         emotion=emotion,
-        has_positions=bool(snapshot.positions),
+        has_positions=any(p.quantity > 0 for p in snapshot.positions.values()),
     )
     return _json("200 OK", {"status": "ok", "data": risk.to_dict()})
 
 
 def _positions(environ, runtime: Runtime):
-    snapshot = runtime.paper.snapshot()
+    snapshot = runtime.account_snapshot(_latest_date(runtime))
     return _json("200 OK", {"status": "ok", "data": snapshot.to_dict()})
 
 
@@ -762,6 +885,10 @@ def _trades(runtime: Runtime):
 
 def _post_trade(environ, runtime: Runtime):
     data = _body(environ)
+    _validate_trade(data)
+    request_id = data.get("request_id")
+    if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id)):
+        raise ValueError("request_id 必须为 8 至 128 位字母、数字、下划线或短横线")
     try:
         trade = TradeRecord.create(
             symbol=data.get("symbol", data.get("ts_code", "").split(".")[0]),
@@ -782,9 +909,16 @@ def _post_trade(environ, runtime: Runtime):
             user_reason=data.get("user_reason", ""),
             execution_reason=data.get("execution_reason", ""),
             result=data.get("result"),
+            trade_date=data.get("trade_date", ""),
         )
-        runtime.journal.record(trade)
-        return _json("201 Created", {"status": "ok", "data": trade.to_dict()})
+        if request_id:
+            trade.trade_id = "decision_" + hashlib.sha256(request_id.encode()).hexdigest()
+        try:
+            saved = runtime.journal.record(trade)
+        except ValueError as exc:
+            return _json("409 Conflict", {"status": "error", "detail": str(exc)})
+        runtime.context_cache.clear()
+        return _json("201 Created" if saved is trade else "200 OK", {"status": "ok", "data": saved.to_dict()})
     except KeyError as exc:
         return _json("400 Bad Request", {"status": "error", "detail": f"missing {exc.args[0]}"})
 
@@ -808,13 +942,30 @@ def _profile(runtime: Runtime):
 
 
 def _backtest_runs(runtime: Runtime):
-    return _json("200 OK", {"status": "ok", "data": runtime.backtest_runs})
+    from backend.api.backtest_store import BacktestStore
+    return _json("200 OK", {"status": "ok", "data": BacktestStore(runtime.root).list(limit=50)})
 
 
 def _post_backtest_run(environ, runtime: Runtime):
+    from backend.data.atomic import file_lock
+    try:
+        with file_lock(runtime.root / "backtest" / "active", timeout=0):
+            return _run_backtest(environ, runtime)
+    except TimeoutError:
+        return _json("409 Conflict", {"status": "error", "detail": "已有回测正在运行，请等待完成后再试"})
+
+
+def _run_backtest(environ, runtime: Runtime):
     data = _body(environ)
     strategy_id = data.get("strategy", "ma_cross")
-    strategy = runtime.strategies.get(strategy_id, runtime.strategies["ma_cross"])
+    if strategy_id not in runtime.strategies:
+        raise ValueError("未知策略")
+    for name in ("start_date", "end_date"):
+        if data.get(name):
+            _validate_date(data[name])
+    if data.get("start_date") and data.get("end_date") and data["start_date"] > data["end_date"]:
+        raise ValueError("开始日期不可晚于结束日期")
+    strategy = runtime.strategies[strategy_id]
     try:
         engine = AShareBacktestEngine(runtime.provider, strategy)
         result = engine.run(
@@ -837,19 +988,50 @@ def _post_backtest_run(environ, runtime: Runtime):
             else [],
             "lookahead_issues": result.lookahead_issues or [],
         }
+        from backend.api.backtest_store import BacktestStore
+        BacktestStore(runtime.root).save(run)
         runtime.backtest_runs.append(run)
+        runtime.backtest_runs[:] = runtime.backtest_runs[-50:]
         return _json("201 Created", {"status": "ok", "data": run})
-    except Exception as exc:
-        return _json("500 Internal Server Error", {"status": "error", "detail": str(exc)})
+    except ValueError:
+        raise
+    except Exception:
+        logging.getLogger(__name__).exception("Backtest failed or could not be saved")
+        return _json("500 Internal Server Error", {"status": "error", "detail": "回测未完成或结果无法保存，请查看运行日志后重试"})
 
 
 def _post_paper_trade(environ, runtime: Runtime):
     data = _body(environ)
+    _validate_trade(data, paper=True)
+    from backend.paper.engine import IdempotencyConflict
     try:
-        default_trade_date = runtime.provider.latest_trade_date() or "20240103"
+        signal_id = data.get("signal_id", f"paper_{uuid.uuid4().hex[:10]}")
+        if not signal_id.strip():
+            raise ValueError("signal_id 不可为空")
+        # Recover a confirmed fill before consulting today's calendar, current
+        # listing or prices. A lost response remains recoverable on another day.
+        order = runtime.paper.replay_order(signal_id, ts_code=data["ts_code"],
+            action=data.get("action", "BUY"), price=data["price"], quantity=data["quantity"],
+            trade_date=data.get("trade_date") or None)
+        if order is not None:
+            return _json("200 OK", {"status": "ok", "data": {"order": order.to_dict(),
+                "snapshot": runtime.account_snapshot(order.trade_date).to_dict()}})
+        session = get_trading_session()
+        default_trade_date = session.current_trading_day()
+        if not default_trade_date:
+            raise ValueError("交易日历不可用")
+        trade_date = _validate_date(data.get("trade_date") or default_trade_date)
+        if trade_date != default_trade_date:
+            raise ValueError("当前账户仅接受当前交易日，历史重放请使用独立账户")
+        code = data["ts_code"]
+        basic = runtime.provider.stock_basic(ts_codes=[code])
+        if basic.empty or code not in set(basic["ts_code"]):
+            raise ValueError("标的未在股票名单中")
+        if float(data["quantity"]) % 100 and data.get("action", "BUY") == "BUY":
+            raise ValueError("买入数量必须为 100 股整数倍")
         signal = TradeSignal(
             ts_code=data["ts_code"],
-            trade_date=data.get("trade_date", default_trade_date),
+            trade_date=trade_date,
             action=data.get("action", "BUY"),
             price=data.get("price"),
             quantity=(
@@ -859,16 +1041,35 @@ def _post_paper_trade(environ, runtime: Runtime):
             ),
             strength=float(data.get("strength", 1.0)),
             reason=data.get("reason", "paper manual"),
-            strategy_id=data.get("strategy_id", "strong_sector_breakout"),
-            strategy_version=data.get("strategy_version", "1.0"),
-            signal_id=data.get("signal_id", f"paper_{uuid.uuid4().hex[:10]}"),
+            strategy_id=data.get("strategy_id", "manual"),
+            strategy_version=data.get("strategy_version", "1.1"),
+            signal_id=signal_id,
         )
+        from backend.backtest.execution import rejection_reason
+        limits = runtime.provider.stk_limit(ts_codes=[code], trade_date=trade_date)
+        if limits.empty:
+            raise ValueError("当日涨跌停数据不可用，无法验证成交")
+        suspended = runtime.provider.suspend_d(ts_codes=[code], trade_date=trade_date)
+        bars = runtime.provider.daily(ts_codes=[code], start_date=trade_date, end_date=trade_date)
+        reason = rejection_reason(signal.action, float(signal.price), limits.iloc[0].to_dict(),
+            suspended=not suspended.empty, bar=bars.iloc[0].to_dict() if not bars.empty else None)
+        if reason:
+            from backend.paper.models import PaperOrder
+            order = PaperOrder(code, trade_date, signal.action, float(signal.price), 0,
+                               status="REJECTED", reason=reason)
+            return _json("200 OK", {"status": "ok", "data": {
+                "order": order.to_dict(), "snapshot": runtime.account_snapshot(trade_date).to_dict()}})
         order = runtime.paper.execute_signal(signal)
-        snapshot = runtime.paper.snapshot()
+        if order.status == "FILLED":
+            runtime.analysis_cache.clear()
+            runtime.context_cache.clear()
+        snapshot = runtime.account_snapshot(trade_date)
         return _json(
             "201 Created" if order.status == "FILLED" else "200 OK",
             {"status": "ok", "data": {"order": order.to_dict(), "snapshot": snapshot.to_dict()}},
         )
+    except IdempotencyConflict as exc:
+        return _json("409 Conflict", {"status": "error", "detail": str(exc)})
     except KeyError as exc:
         return _json("400 Bad Request", {"status": "error", "detail": f"missing {exc.args[0]}"})
 
@@ -880,6 +1081,7 @@ def _ai_copilot(environ, runtime: Runtime):
         provider=runtime.provider,
         strategy=runtime.strategies.get("strong_sector_breakout"),
         context_cache=runtime.context_cache,
+        runtime=runtime,
     )
     if query:
         result = copilot.ask(query, date)
@@ -889,16 +1091,12 @@ def _ai_copilot(environ, runtime: Runtime):
 
 
 def _data_latest(runtime: Runtime):
-    latest = _latest_date(runtime)
-    try:
-        info = get_trading_session().describe()
-    except Exception:
-        info = {}
+    from backend.api.data_status import display_dates
     return _json(
         "200 OK",
         {
             "status": "ok",
-            "data": {"date": latest, "phase": info.get("phase"), "now": info.get("now")},
+            "data": display_dates(runtime),
         },
     )
 
@@ -906,33 +1104,27 @@ def _data_latest(runtime: Runtime):
 _HISTORY_DATES: Optional[tuple[float, dict]] = None
 
 
-def _data_history_dates(_runtime: Runtime):
-    """Trading days the local store can actually answer for.
-
-    The dashboard used a free date input, so picking a day outside the local
-    coverage returned the same empty "数据不足" page for every date -- which
-    reads as "the data never changes". Offering the real list removes that trap.
-    """
-    global _HISTORY_DATES
-    now = time.monotonic()
-    if _HISTORY_DATES is not None and now - _HISTORY_DATES[0] < _COVERAGE_TTL_SECONDS:
-        return _json("200 OK", {"status": "ok", "data": _HISTORY_DATES[1]})
-
-    payload: dict = {"dates": [], "latest": None, "coverage": None}
-    try:
-        from backend.data.history import MarketHistory
-
-        history = MarketHistory()
-        dates = history.distinct_dates()
-        coverage = history.coverage()
-        payload = {
-            "dates": sorted(dates, reverse=True),
-            "latest": dates[-1] if dates else None,
-            "coverage": _history_coverage(),
-            "codes": coverage.get("codes"),
-            "rows": coverage.get("rows"),
-        }
-    except Exception as exc:  # noqa: BLE001
-        payload["error"] = str(exc)
-    _HISTORY_DATES = (now, payload)
+def _data_history_dates(runtime: Runtime):
+    def compute():
+        from backend.api.data_status import history_dates, latest_complete
+        if hasattr(runtime.provider, "history"):
+            dates = runtime.provider.history.distinct_dates()
+            coverage = runtime.provider.history.coverage()
+        elif runtime.provider.name in ("fixture", "storage"):
+            frame = runtime.provider.daily()
+            dates = sorted(frame["trade_date"].astype(str).unique()) if not frame.empty else []
+            coverage = {}
+        else:
+            dates, coverage = [], {}
+        return {"dates": sorted(dates, reverse=True), "latest": dates[-1] if dates else None,
+            "coverage": _history_coverage(runtime), "codes": coverage.get("codes"),
+            "rows": coverage.get("rows"), "source": runtime.provider.name,
+            "is_fixture": runtime.provider.name == "fixture", "latest_complete_date": latest_complete(runtime),
+            "history_dates": history_dates(runtime)}
+    payload = runtime.analysis_cache.get_or_compute(("history_dates", int(time.monotonic() // 5)), compute)
     return _json("200 OK", {"status": "ok", "data": payload})
+
+
+def _ingest_status(runtime: Runtime):
+    from backend.data.auto_ingest import status
+    return _json("200 OK", {"status": "ok", "data": status(runtime)})

@@ -233,3 +233,9 @@ data/*.jsonl
 *.sqlite
 *.sqlite3
 data/paper/
+data/backtest/
+data/demo/
+server*.log
+server.pid
+server.process.json
+server-demo.process.json
