@@ -95,6 +95,7 @@ def store_closing_snapshot(runtime: Any, day: str, quote_service: Any = None) ->
         logging.getLogger(__name__).exception("Storing closing snapshot for %s failed", day)
         return None
     _snapshot_done[key] = version
+    _remember_market_state(history, frame, day)
     if record and record.get("inserted"):
         _row_cache.pop(day, None)
         _invalidate(runtime, day)
@@ -102,6 +103,8 @@ def store_closing_snapshot(runtime: Any, day: str, quote_service: Any = None) ->
 
 
 _SNAPSHOT_CHECK_SECONDS = 30.0
+_FULL_CHECK_SECONDS = 30.0
+_last_full_check: dict[str, float] = {}
 _snapshot_checked: dict[str, float] = {}
 
 
@@ -120,6 +123,20 @@ def closing_snapshot_days(session: Any, day: str) -> list[str]:
     if expected and str(expected) != day and str(expected) < day:
         days.append(str(expected))
     return days
+
+
+def _remember_market_state(history: Any, frame: Any, day: str) -> None:
+    """Pin the day's market state from its closing snapshot (used next session)."""
+    try:
+        if history.get_state(f"market_state:{day}"):
+            return
+        from backend.market.snapshot import compute_full_market_state
+
+        state = compute_full_market_state(frame, day)
+        history.set_state(f"market_state:{day}", json.dumps(
+            {"state": state.state, "date": str(day), "source": "收盘全市场行情快照"}, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - the bars matter more than this convenience record
+        logging.getLogger(__name__).warning("Could not record market state for %s", day, exc_info=True)
 
 
 def _schedule_closing_snapshot(runtime: Any, days: list[str], quote_service: Any = None) -> None:
@@ -183,6 +200,7 @@ def _invalidate(runtime: Any, earliest: Optional[str] = None) -> None:
     except Exception:  # noqa: BLE001
         pass
     _row_cache.clear()
+    _last_full_check.clear()
 
 
 def ensure_today_bars(
@@ -223,6 +241,15 @@ def ensure_today_bars(
         _schedule_closing_snapshot(runtime, closing_snapshot_days(session, day), quote_service)
     if not day or _state["running"]:
         return False
+    production = backfill is None and rows_on is None
+    if production:
+        # Runs before every API request: the full scan below is cheap now, but
+        # once per short interval is still plenty to notice a missing day.
+        now = time.monotonic()
+        key = str(getattr(getattr(runtime.provider, "history", None), "db_path", id(runtime.provider)))
+        if now - _last_full_check.get(key, -_FULL_CHECK_SECONDS) < _FULL_CHECK_SECONDS:
+            return False
+        _last_full_check[key] = now
 
     threshold = MIN_ROWS_FOR_TODAY
     stock_codes: set[str] = set()
@@ -266,7 +293,12 @@ def ensure_today_bars(
                 pass
         return True
 
-    counts = {target: counter(target) for target in recent}
+    if production and history is not None and stock_codes and recent:
+        # One grouped query instead of one query per day (was ~0.8 s per request).
+        by_day = history.counts_by_date(min(recent), max(recent), exclude=INDEX_CODES)
+        counts = {target: by_day.get(target, 0) for target in recent}
+    else:
+        counts = {target: counter(target) for target in recent}
     critical = [target for target in reversed(recent)
                 if counts[target] < threshold and retry_due(target)]
     index_gaps: list[str] = []
@@ -490,5 +522,6 @@ def reset_state() -> None:
         _state.clear()
         _state.update({"date": None, "running": False, "done": set()})
     _row_cache.clear()
+    _last_full_check.clear()
     _retry_after.clear()
     _pending_memory.clear()

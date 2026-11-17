@@ -25,12 +25,13 @@ import pytest
     "structured_ai_empty_and_stale",
     "readiness_index_and_demo_labels",
     "unknown_ai_trade_permission",
-    "personal_sizing",
     "personal_profile_save",
     "daily_loop_render",
     "pretrade_render",
-    "real_trade_submit",
     "plan_submit",
+    "today_render",
+    "watchlist_add_by_name",
+    "compact_date_face",
 ])
 def test_dashboard_interactions(scenario):
     node = shutil.which("node")

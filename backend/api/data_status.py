@@ -64,7 +64,14 @@ def history_dates(runtime) -> list[dict]:
     history = getattr(runtime.provider, "history", None)
     if history is not None:
         stat = history.db_path.stat()
-        revision = (stat.st_mtime_ns, stat.st_size)
+        wal = history.db_path.with_name(history.db_path.name + "-wal")
+        try:
+            wal_stat = wal.stat()
+            wal_rev = (wal_stat.st_mtime_ns, wal_stat.st_size)
+        except OSError:
+            wal_rev = (0, 0)
+        # In WAL mode new rows land in the -wal file first; include it.
+        revision = (stat.st_mtime_ns, stat.st_size, *wal_rev)
     else:
         revision = int(time.monotonic() // 5)
     # Reuse the expensive market-wide scan while the database is unchanged;

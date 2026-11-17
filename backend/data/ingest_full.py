@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -144,11 +145,18 @@ def run_backfill(
     required_dates: list[str] | None = None,
     progress_callback: Callable[[dict], None] | None = None,
     priority_codes: list[str] | None = None,
+    workers: int | None = None,
 ) -> dict:
     """Fill missing daily bars through the selected public k-line endpoint.
 
     Every required date must be present before a stock is skipped. A partial
     response is stored, with remaining gaps reported for subsequent retries.
+
+    Downloads run on ``workers`` threads (default 6, ``COPILOT_BACKFILL_WORKERS``)
+    because each request mostly waits on the network; results are written by
+    this thread, one stock at a time and in priority order, so the store sees
+    the same writes as a sequential run. One request covers the whole window,
+    so a week-long gap costs about as much as a single day.
     """
     if source == "eastmoney":
         from backend.data.providers.eastmoney import fetch_daily
@@ -204,32 +212,52 @@ def run_backfill(
         return {"done": 0, "failed": 0, "skipped": len(targets), "coverage": history.coverage()}
 
     import time as _time
+    from concurrent.futures import ThreadPoolExecutor
 
     ok = 0
     fetched_codes = set()
     failed: dict[str, str] = {}
     corporate_actions = 0
     started = _time.time()
-    for index, code in enumerate(todo, start=1):
+
+    def download(code: str):
         last_error = ""
         for attempt in range(1, retries + 2):
             try:
                 frame = fetch_daily(code, start_date, end_date)
-                if frame.empty:
-                    last_error = "empty"
-                    break
-                corporate_actions += int(frame.attrs.get("corporate_action_rows", 0))
-                stored_rows += history.ingest(frame)
-                ok += 1
-                fetched_codes.add(code)
-                last_error = ""
-                break
+                return code, frame, ("empty" if frame.empty else "")
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 _time.sleep(min(1.0 * attempt, 3.0))
-        if last_error:
-            failed[code] = last_error
-        report(index, ok, len(failed))
+        return code, None, last_error
+
+    try:
+        pool_size = max(1, int(workers or os.environ.get("COPILOT_BACKFILL_WORKERS") or 6))
+    except (TypeError, ValueError):
+        pool_size = 6  # a malformed setting must not stop gap repair
+    with ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="backfill") as pool:
+        # map() keeps submission order, so priority stocks are fetched first and
+        # written first even though later downloads may finish earlier.
+        for index, (code, frame, error) in enumerate(pool.map(download, todo), start=1):
+            if error:
+                failed[code] = error
+            else:
+                store_error = ""
+                for attempt in range(1, 4):  # e.g. a briefly locked database
+                    try:
+                        stored_rows += history.ingest(frame)
+                        store_error = ""
+                        break
+                    except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the rest
+                        store_error = f"store: {exc}"
+                        _time.sleep(0.2 * attempt)
+                if store_error:
+                    failed[code] = store_error
+                else:
+                    corporate_actions += int(frame.attrs.get("corporate_action_rows", 0))
+                    ok += 1
+                    fetched_codes.add(code)
+            report(index, ok, len(failed))
         if index % report_every == 0 or index == len(todo):
             elapsed = _time.time() - started
             rate = index / elapsed if elapsed else 0.0

@@ -48,6 +48,10 @@ class RiskProfile:
     first_entry_min: float = 0.10
     first_entry_max: float = 0.15
     max_stop_pct: float = 0.08
+    # Orders are placed for the next session without watching the market:
+    # a buy limit sits at most this far above the last close; a higher open
+    # means the buy is skipped.
+    chase_limit: float = 0.02
     # The user's rules state 30%-50% for a ranging market and <=20% when weak
     # or unclear. No rule was stated for a clear uptrend, so it defaults to the
     # range ceiling until the user sets it explicitly.
@@ -70,7 +74,7 @@ class RiskProfile:
                 or not math.isfinite(self.capital) or self.capital <= 0:
             raise ValueError("capital 须为正数（账户资金，元）")
         for name in ("risk_per_trade", "max_risk_per_trade", "max_single_weight",
-                     "first_entry_min", "first_entry_max", "max_stop_pct"):
+                     "first_entry_min", "first_entry_max", "max_stop_pct", "chase_limit"):
             ratio(name, getattr(self, name))
         if self.risk_per_trade > self.max_risk_per_trade:
             raise ValueError("risk_per_trade 不能大于 max_risk_per_trade")

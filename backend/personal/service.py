@@ -5,12 +5,14 @@ Everything here reads; nothing places or records a trade on its own.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Optional
 
 import pandas as pd
 
 from backend.personal.adjusted import AdjustedBarStore
+from backend.personal.executions import ExecutionStore
 from backend.personal.band_rules import BUY, BELOW_MA, NO_DATA, WEEKLY_FAIL, BandParams, evaluate
 from backend.personal.plans import PlanStore
 from backend.personal.real_account import RealTradeStore
@@ -77,7 +79,7 @@ def stock_status(runtime, code: str, *, as_of: Optional[str] = None, position: O
     store = store or AdjustedBarStore(runtime.root)
     bars, basis = store.bars(code, as_of, _history(runtime))
     pos = None
-    if position and position.get("shares"):
+    if position and position.get("avg_cost") and position.get("entry_date"):
         pos = {"entry_price": position["avg_cost"], "entry_date": position["entry_date"],
                "entry_close_raw": _raw_close(runtime, code, position["entry_date"])}
     if bars.empty:
@@ -91,11 +93,27 @@ def stock_status(runtime, code: str, *, as_of: Optional[str] = None, position: O
     return result
 
 
+def current_positions(runtime, profile=None) -> list[dict[str, Any]]:
+    """What the user holds: holdings marked in the watchlist (plus any old ledger positions)."""
+    out: dict[str, dict[str, Any]] = {}
+    for item in WatchlistStore(runtime.root).holdings():
+        h = item["holding"]
+        out[item["ts_code"]] = {"ts_code": item["ts_code"], "name": item.get("name", ""), "shares": h.get("shares"),
+                                "avg_cost": h["cost"], "entry_date": h["entry_date"], "source": "watchlist"}
+    try:
+        ledger = RealTradeStore(runtime.root).account(profile or RiskProfileStore(runtime.root).load()[0])
+    except Exception:  # noqa: BLE001 - an unreadable old ledger must not hide marked holdings
+        ledger = {"positions": []}
+    for pos in ledger["positions"]:
+        out.setdefault(pos["ts_code"], {"ts_code": pos["ts_code"], "name": pos.get("name", ""),
+                                        "shares": pos["shares"], "avg_cost": pos["avg_cost"],
+                                        "entry_date": pos["entry_date"], "source": "ledger"})
+    return list(out.values())
+
+
 def watchlist_status(runtime) -> dict[str, Any]:
     as_of = evaluation_day(runtime)
-    profile, _ = RiskProfileStore(runtime.root).load()
-    account = RealTradeStore(runtime.root).account(profile)
-    held = {p["ts_code"]: p for p in account["positions"]}
+    held = {p["ts_code"]: p for p in current_positions(runtime)}
     store = AdjustedBarStore(runtime.root)
     entries = WatchlistStore(runtime.root).list()
     if as_of:
@@ -104,7 +122,8 @@ def watchlist_status(runtime) -> dict[str, Any]:
     for entry in entries:
         status = stock_status(runtime, entry["ts_code"], as_of=as_of, position=held.get(entry["ts_code"]),
                               store=store)
-        status.update(name=entry.get("name", ""), note=entry.get("note", ""), held=entry["ts_code"] in held)
+        status.update(name=entry.get("name", ""), note=entry.get("note", ""), held=entry["ts_code"] in held,
+                      holding=entry.get("holding"))
         items.append(status)
     return {"evaluation_day": as_of, "items": items, "params": BandParams().to_dict()}
 
@@ -148,46 +167,93 @@ def latest_prices(runtime, codes: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def current_market_state(runtime) -> dict[str, Any]:
-    frame, meta = _snapshot(runtime)
-    if frame is not None:
-        try:
-            from backend.market.snapshot import compute_full_market_state
+def market_state_for(runtime, day: Optional[str]) -> dict[str, Any]:
+    """Market state as of the close of ``day`` -- never an intraday reading.
 
-            state = compute_full_market_state(frame, meta.quote_date)
-            return {"state": state.state, "date": meta.quote_date, "source": "全市场行情快照"}
+    Taken from the closing full-market snapshot of that day and remembered in
+    the history store, so the same day always gives the same answer.
+    """
+    empty = {"state": None, "date": day, "source": None}
+    history = _history(runtime)
+    if not day:
+        return empty
+    key = f"market_state:{day}"
+    if history is not None:
+        try:
+            saved = history.get_state(key)
+            if saved:
+                return json.loads(saved)
         except Exception:  # noqa: BLE001
             pass
-    return {"state": None, "date": None, "source": None}
+    from backend.market.snapshot import compute_full_market_state
+
+    frame, meta = _snapshot(runtime)
+    source = "收盘全市场行情快照"
+    if frame is None or str(meta.quote_date) != str(day) or getattr(meta, "status", None) != "final":
+        # Not that day's closing snapshot (e.g. opened mid-session the next
+        # day): rebuild the same reading from that day's stored daily bars.
+        frame, source = _bars_as_snapshot(history, day), "本地日线（收盘）"
+        if frame is None:
+            return empty
+    try:
+        state = compute_full_market_state(frame, day)
+    except Exception:  # noqa: BLE001
+        return empty
+    record = {"state": state.state, "date": str(day), "source": source}
+    if history is not None:
+        try:
+            history.set_state(key, json.dumps(record, ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            pass
+    return record
+
+
+def _bars_as_snapshot(history, day: str):
+    """One day's stored bars in the snapshot column layout, or None if too few."""
+    if history is None:
+        return None
+    try:
+        bars = history.load(start_date=day, end_date=day)
+    except Exception:  # noqa: BLE001
+        return None
+    if bars is None or len(bars) < 1000:
+        return None
+    return bars.rename(columns={"close": "price", "vol": "volume"})
+
+
+def current_market_state(runtime) -> dict[str, Any]:
+    return market_state_for(runtime, evaluation_day(runtime))
 
 
 def account_view(runtime) -> dict[str, Any]:
+    """Holdings valued at the evaluation-day close; cash estimated from cost."""
     profile, source = RiskProfileStore(runtime.root).load()
-    account = RealTradeStore(runtime.root).account(profile)
-    codes = [p["ts_code"] for p in account["positions"]]
-    prices = latest_prices(runtime, codes)
+    positions = current_positions(runtime, profile)
     store = AdjustedBarStore(runtime.root)
     as_of = evaluation_day(runtime)
-    if as_of and codes:
-        store.prefetch(codes, as_of)
-    exposure = 0.0
-    for pos in account["positions"]:
-        quote = prices.get(pos["ts_code"])
-        if quote:
-            value = quote["price"] * pos["shares"]
-            exposure += value
-            pos.update(price=quote["price"], price_date=quote["date"], price_source=quote["source"],
-                       market_value=round(value, 2), unrealized_pnl=round(value - pos["cost"], 2),
-                       weight=round(value / profile.capital, 4))
-        else:
-            pos.update(price=None, market_value=None, unrealized_pnl=None, weight=None)
+    if as_of and positions:
+        store.prefetch([p["ts_code"] for p in positions], as_of)
+    exposure = invested = 0.0
+    for pos in positions:
         status = stock_status(runtime, pos["ts_code"], as_of=as_of, position=pos, store=store)
-        pos["exit"] = status.get("exit")
-        pos["status_basis"] = status.get("basis")
-    account.update(capital=profile.capital, profile_source=source, exposure=round(exposure, 2),
-                   exposure_pct=round(exposure / profile.capital, 4),
-                   unpriced=[p["ts_code"] for p in account["positions"] if p.get("price") is None])
-    return account
+        ex = status.get("exit") or {}
+        close = ex.get("close") or (status.get("ma") or {}).get("close")
+        pos.update(exit=ex, status_basis=status.get("basis"), close=close, price=close, price_date=as_of,
+                   price_source=f"{as_of} 收盘" if as_of else None, market_value=None, weight=None,
+                   unrealized_pnl=None)
+        if pos.get("shares"):
+            invested += pos["avg_cost"] * pos["shares"]
+            if close:
+                value = close * pos["shares"]
+                exposure += value
+                pos.update(market_value=round(value, 2), weight=round(value / profile.capital, 4),
+                           unrealized_pnl=round(value - pos["avg_cost"] * pos["shares"], 2))
+    return {"positions": positions, "capital": profile.capital, "profile_source": source,
+            "cash": round(profile.capital - invested, 2), "cash_estimated": True,
+            "exposure": round(exposure, 2), "exposure_pct": round(exposure / profile.capital, 4),
+            "price_basis": as_of,
+            "unpriced": [p["ts_code"] for p in positions if p.get("shares") and not p.get("close")],
+            "unknown_shares": [p["ts_code"] for p in positions if not p.get("shares")]}
 
 
 def limit_rate(ts_code: str, name: str = "") -> float:
@@ -234,15 +300,24 @@ def limit_checks(code: str, row: Optional[dict], meta: Any, entry_price: Any) ->
 
 # -- pre-trade check -------------------------------------------------------------
 
+def next_day_limit(close: Any, profile) -> Optional[float]:
+    """Highest price worth paying next session: last close plus the chase limit."""
+    try:
+        value = float(close)
+    except (TypeError, ValueError):
+        return None
+    return round(value * (1 + profile.chase_limit), 2) if value > 0 else None
+
+
 def _latest_plan(store: PlanStore, today: str) -> Optional[dict[str, Any]]:
     dates = [d for d in store.dates() if d <= today]
     return store.get(dates[0]) if dates else None
 
 
 def pretrade_check(runtime, query: dict[str, Any]) -> dict[str, Any]:
-    from backend.personal.real_account import _code
+    from backend.personal.stocks import resolve_stock
 
-    code = _code(query.get("ts_code"))
+    code, name = resolve_stock(runtime, query.get("ts_code") or query.get("name"))
     profile, profile_source = RiskProfileStore(runtime.root).load()
     account = account_view(runtime)
     held = {p["ts_code"]: p for p in account["positions"]}
@@ -274,8 +349,8 @@ def pretrade_check(runtime, query: dict[str, Any]) -> dict[str, Any]:
 
     # 3. sizing with real exposure and cash
     ma = status.get("ma") or {}
-    prices = latest_prices(runtime, [code])
-    entry_price = query.get("entry") or (prices.get(code) or {}).get("price")
+    limit = next_day_limit(ma.get("close"), profile)
+    entry_price = query.get("entry") or limit
     stop_price = query.get("stop") or ma.get("suggested_stop")
     market = {"state": query.get("market_state"), "source": "手动选择"} if query.get("market_state") \
         else current_market_state(runtime)
@@ -322,13 +397,230 @@ def pretrade_check(runtime, query: dict[str, Any]) -> dict[str, Any]:
         add("limit", "涨跌停", "pass", "买入价在涨跌停范围内，未封涨停")
 
     if account["unpriced"]:
-        add("pricing", "持仓估值", "warn", f"{', '.join(account['unpriced'])} 没有最新价，总仓位可能低估")
+        add("pricing", "持仓估值", "warn", f"{', '.join(account['unpriced'])} 没有收盘价，总仓位可能低估")
+    if account["unknown_shares"]:
+        add("pricing", "持仓估值", "warn",
+            f"{', '.join(account['unknown_shares'])} 没填股数，总仓位和可用资金按 0 计，可能低估")
 
     levels = [c["level"] for c in checks]
     verdict = "不通过" if "fail" in levels else "有警告" if "warn" in levels else "通过"
-    return {"ts_code": code, "verdict": verdict, "checks": checks,
+    return {"ts_code": code, "name": name, "verdict": verdict, "checks": checks,
             "inputs": {"entry_price": entry_price, "stop_price": stop_price,
+                       "entry_source": "手动填写" if query.get("entry") else
+                       f"下一交易日限价：{status.get('evaluation_day') or ''} 收盘价 + 追高上限 {profile.chase_limit:.0%}",
                        "stop_source": "手动填写" if query.get("stop") else "21日线下方 1%"},
             "market": market, "sizing": sizing, "status": status, "profile_source": profile_source,
             "account": {k: account[k] for k in ("cash", "exposure", "exposure_pct", "capital")},
             "note": "检查只说明是否符合你自己的规则，不构成买卖建议；是否下单由你决定。"}
+
+
+# -- today's actions ------------------------------------------------------------
+
+_ACTION_ORDER = {"sell": 0, "plan_exit": 1, "near_stop": 2, "buy": 3, "plan": 4, "reminder": 5, "hold": 6, "none": 7}
+_NEAR_STOP = 0.03
+
+
+def _day_text(day: Any) -> str:
+    text = str(day or "")
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}" if len(text) == 8 and text.isdigit() else text
+
+
+_WEEKDAYS = "一二三四五六日"
+
+
+def _session_label(day: Optional[str]) -> str:
+    """'11-23 周一' for a YYYYMMDD trading day."""
+    try:
+        parsed = datetime.strptime(str(day), "%Y%m%d")
+    except (TypeError, ValueError):
+        return "下一交易日"
+    return f"{parsed:%m-%d} 周{_WEEKDAYS[parsed.weekday()]}"
+
+
+def next_session(runtime, day: Optional[str]) -> Optional[str]:
+    """First open trading day after ``day`` from the exchange calendar (None if unknown)."""
+    if not day:
+        return None
+    try:
+        start = (datetime.strptime(str(day), "%Y%m%d") + pd.Timedelta(days=1)).strftime("%Y%m%d")
+        end = (datetime.strptime(str(day), "%Y%m%d") + pd.Timedelta(days=20)).strftime("%Y%m%d")
+        cal = runtime.provider.trade_cal(start_date=start, end_date=end, is_open=True)
+        days = sorted(str(d) for d in cal["cal_date"])
+        return days[0] if days else None
+    except Exception:  # noqa: BLE001 - calendar may be unavailable; fall back to wording
+        return None
+
+
+def _session_info() -> dict[str, Any]:
+    try:
+        from backend.market.session import get_trading_session
+
+        return get_trading_session().describe_cached()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def today_view(runtime) -> dict[str, Any]:
+    """The execution list: what to do in the next session, judged on the last close.
+
+    The user does not watch the market intraday. Everything here is decided on
+    the last confirmed daily close and phrased as orders that can be placed in
+    the broker app the evening before or before the open (limit buys with a
+    give-up price, conditional stop orders). Built only from the user's own
+    rules and records; nothing here is a recommendation to trade.
+    """
+    profile, _ = RiskProfileStore(runtime.root).load()
+    account = account_view(runtime)
+    watch = watchlist_status(runtime)
+    info = _session_info()
+    phase = info.get("phase")
+    trading_day = str(info.get("current_trading_day") or datetime.now().strftime("%Y%m%d"))
+    basis = watch.get("evaluation_day") or account.get("price_basis")
+    after_close = phase in ("收盘", "盘后", "休市")
+    next_day = next_session(runtime, basis) if after_close else None
+    next_label = _session_label(next_day) if next_day else "下一交易日"
+    target = next_label if after_close else "今天"
+    if after_close:
+        notice = (f"{_day_text(basis)} 收盘数据已出：以下是 {next_label} 的执行单，"
+                  "可以今晚或开盘前在券商 App 设好条件单。")
+    else:
+        notice = (f"现在是{phase or '交易日'}：以下依据 {_day_text(basis)} 收盘，按单执行即可，盘中不必盯盘；"
+                  "今天收盘后再更新。")
+    market = market_state_for(runtime, basis)
+    regime = profile.regime_for_state(market.get("state"))
+    cap = profile.exposure_caps[regime] if regime else None
+
+    plans = PlanStore(runtime.root)
+    dates = plans.dates()
+    plan = next((plans.get(d) for d in dates if basis and d <= basis), None)
+    held = {p["ts_code"]: p for p in account["positions"]}
+    status_by_code = {item["ts_code"]: item for item in watch["items"]}
+    planned = {c["ts_code"]: c for c in (plan or {}).get("candidates", [])}
+    plan_holdings = {h["ts_code"]: h for h in (plan or {}).get("holdings", [])}
+    marks = ExecutionStore(runtime.root).get(basis)
+    actions: list[dict[str, Any]] = []
+
+    def label(code, name):
+        return f"{name} {code}" if name else code
+
+    def add(kind, level, code, name, title, detail, next_step, check=False, order=None):
+        key = f"{kind}:{code or 'plan'}"
+        actions.append({"kind": kind, "level": level, "ts_code": code, "name": name or "", "title": title,
+                        "detail": detail, "next_step": next_step, "check": check, "order": order,
+                        "key": key, "mark": marks.get(key)})
+
+    def size(entry, stop):
+        if account["unknown_shares"]:
+            return {"lots": 0, "reason": "有持仓没填股数，总仓位和可用资金不准，先在观察池补填股数"}
+        if not entry or not stop or float(stop) >= float(entry):
+            return None
+        try:
+            return size_position(profile, entry, stop, market_state=market.get("state"),
+                                 current_exposure=account["exposure"], available_cash=account["cash"])
+        except ValueError:
+            return None
+
+    for pos in account["positions"]:
+        code, name, ex = pos["ts_code"], pos.get("name", ""), pos.get("exit") or {}
+        verdict, stop, close = ex.get("verdict") or "", ex.get("stop"), pos.get("close")
+        shares = f" {pos['shares']} 股" if pos.get("shares") else "（全部）"
+        if verdict.startswith("离场"):
+            add("sell", "danger", code, name, f"卖出 {label(code, name)}",
+                f"{verdict}：{ex.get('rule', '')}；{_day_text(basis)} 收盘 {close}，离场线 {stop}",
+                f"{target}开盘后卖出{shares}；成交后在观察池点「已卖出」",
+                order={"side": "sell", "when": target, "shares": pos.get("shares")})
+            continue
+        if verdict == NO_DATA or not stop:
+            add("near_stop", "warn", code, name, f"无法判断离场：{label(code, name)}",
+                ex.get("reason") or "缺少复权日线或买入日数据", "检查数据后手动确认离场线")
+            continue
+        distance = (close / stop - 1) if close and stop else None
+        stop_order = f"止损条件单：价格 ≤ {stop} 时卖出{shares}（每天收盘后按新的离场线更新）"
+        hp = plan_holdings.get(code)
+        if hp and hp["action"] in ("离场", "减仓"):
+            add("plan_exit", "warn", code, name, f"计划{hp['action']} {label(code, name)}",
+                f"来自 {_day_text(plan['date'])} 的计划{('：' + hp['note']) if hp.get('note') else ''}",
+                f"{target}按计划{hp['action']}；成交后在观察池更新持有状态")
+        elif distance is not None and distance <= _NEAR_STOP:
+            add("near_stop", "warn", code, name, f"接近离场线 {label(code, name)}",
+                f"{_day_text(basis)} 收盘 {close}，离场线 {stop}，只差 {distance:.1%}", stop_order,
+                order={"side": "stop", "price": stop, "shares": pos.get("shares")})
+        else:
+            add("hold", "info", code, name, f"持有 {label(code, name)}",
+                f"离场线 {stop}" + (f"，距 {_day_text(basis)} 收盘 {distance:.1%}" if distance is not None else ""),
+                stop_order, order={"side": "stop", "price": stop, "shares": pos.get("shares")})
+
+    for item in watch["items"]:
+        code = item["ts_code"]
+        if item.get("entry") != BUY or code in held:
+            continue
+        cross = (item.get("macd") or {}).get("cross") or {}
+        ma = item.get("ma") or {}
+        stop, limit = ma.get("suggested_stop"), next_day_limit(ma.get("close"), profile)
+        sized = size(limit, stop)
+        in_plan = code in planned
+        detail = (f"{_day_text(cross.get('date'))} 金叉放量（量比 {cross.get('volume_ratio')}）；"
+                  + (f"在 {_day_text(plan['date'])} 的计划内" if in_plan else "不在计划内"))
+        if sized and sized["lots"] > 0:
+            add("buy", "ok", code, item.get("name", ""), f"买点 {label(code, item.get('name', ''))}", detail,
+                f"{target}限价 ≤ {limit} 买入 {sized['shares']} 股（约 {sized['value']:,.0f} 元）；"
+                f"开盘高于 {limit} 就放弃；成交后设止损条件单 ≤ {stop}", check=True,
+                order={"side": "buy", "limit": limit, "shares": sized["shares"], "stop": stop})
+        else:
+            add("buy", "warn", code, item.get("name", ""), f"买点 {label(code, item.get('name', ''))}（买不了）",
+                detail, f"按你的风控买不了：{(sized or {}).get('reason') or '缺少限价或止损价'}", check=True)
+
+    for code, cand in planned.items():
+        if code in held or (status_by_code.get(code) or {}).get("entry") == BUY:
+            continue
+        item = status_by_code.get(code) or {}
+        ma = item.get("ma") or {}
+        entry = cand.get("entry_price") or next_day_limit(ma.get("close"), profile)
+        stop = cand.get("stop_price") or ma.get("suggested_stop")
+        sized = size(entry, stop)
+        shares = cand.get("shares") or (sized or {}).get("shares")
+        state = item.get("entry") or "不在观察池，状态未知"
+        order = ({"side": "buy", "limit": entry, "shares": shares, "stop": stop}
+                 if entry and stop and shares else None)
+        add("plan", "info", code, cand.get("name", "") or item.get("name", ""),
+            f"计划候选 {label(code, cand.get('name', '') or item.get('name', ''))}",
+            f"{cand.get('entry_condition') or '计划买入'}（当前状态：{state}）",
+            (f"条件满足时：限价 ≤ {entry} 买入 {shares} 股，止损 {stop}" if order
+             else "条件满足时先做交易前检查"), check=True, order=order)
+
+    for code in account["unknown_shares"]:
+        name = held.get(code, {}).get("name", "")
+        add("reminder", "warn", code, name, f"补填股数 {label(code, name)}",
+            "持有但没填股数：总仓位、可用资金和新的买入股数都无法准确计算",
+            "在观察池点「标记持有」重新保存，填上股数")
+    if after_close and basis and basis not in dates:
+        add("reminder", "warn", "", "", "保存明日计划", "今天收盘后还没有保存计划",
+            "在「计划」里写下明日候选（最多 3 只）和每只持仓的动作")
+    elif not dates:
+        add("reminder", "info", "", "", "还没有任何计划", "没有计划时，任何买入都属于计划外交易",
+            "收盘后在「计划」里保存第一份计划")
+
+    actions.sort(key=lambda a: _ACTION_ORDER.get(a["kind"], 9))
+    if not any(a["kind"] != "hold" for a in actions):
+        add("none", "info", "", "", "没有需要处理的事项", "持仓没有触发离场，观察池没有出现买点。",
+            "继续按计划等待；持仓的止损条件单保持有效")
+
+    return {
+        "trading_day": trading_day, "phase": phase, "evaluation_day": basis, "basis_date": basis,
+        "mode": "next" if after_close else "today", "next_session": next_day,
+        "title": (f"执行单 · {next_label}" if after_close else "今日执行单"),
+        "notice": notice, "plan_date": plan["date"] if plan else None,
+        "plan_saved_today": bool(basis and basis in dates),
+        "market": {**market, "regime": regime, "regime_label": REGIME_LABELS.get(regime) if regime else None,
+                   "exposure_cap": cap},
+        "account": {"capital": account["capital"], "cash": account["cash"], "cash_estimated": True,
+                    "exposure": account["exposure"], "exposure_pct": account["exposure_pct"],
+                    "positions": len(account["positions"]), "unknown_shares": account["unknown_shares"],
+                    "room": round(profile.capital * cap - account["exposure"], 2) if cap is not None else None},
+        "counts": {"sell": sum(a["kind"] == "sell" for a in actions),
+                   "buy": sum(a["kind"] == "buy" and a["level"] == "ok" for a in actions),
+                   "watch": len(watch["items"])},
+        "chase_limit": profile.chase_limit,
+        "actions": actions,
+        "note": "只依据你自己的规则和记录列出待办，不构成买卖建议；条件单由你在券商 App 设置。",
+    }

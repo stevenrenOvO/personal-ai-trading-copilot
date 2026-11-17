@@ -167,6 +167,16 @@ class MarketHistory:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def counts_by_date(self, start_date: str, end_date: str, *, exclude: Iterable[str] = ()) -> dict[str, int]:
+        """Bars per trading day in one query (codes in ``exclude`` not counted)."""
+        skip = list(dict.fromkeys(str(c) for c in exclude))
+        sql = "SELECT trade_date, COUNT(*) FROM daily WHERE trade_date >= ? AND trade_date <= ?"
+        if skip:
+            sql += " AND ts_code NOT IN (" + ",".join("?" for _ in skip) + ")"
+        with self._connect() as conn:
+            rows = conn.execute(sql + " GROUP BY trade_date", [start_date, end_date, *skip]).fetchall()
+        return {str(day): int(count) for day, count in rows}
+
     def rows_on(self, date_key: str) -> int:
         """Number of bars stored for a single trading day."""
         with self._connect() as conn:

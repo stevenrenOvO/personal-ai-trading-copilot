@@ -189,6 +189,13 @@ def dispatch(environ: dict, start_response, runtime: Runtime) -> bool:
         "GET /personal/plan": lambda: _personal_plan(environ, runtime),
         "POST /personal/plan": lambda: _post_personal_plan(environ, runtime),
         "GET /personal/pretrade": lambda: _personal_pretrade(environ, runtime),
+        "GET /personal/today": lambda: _personal_today(runtime),
+        "POST /personal/today/mark": lambda: _post_personal_today_mark(environ, runtime),
+        "GET /personal/stocks": lambda: _personal_stocks(environ, runtime),
+        "GET /personal/usage": lambda: _personal_usage(environ, runtime),
+        "POST /personal/usage": lambda: _post_personal_usage(environ, runtime),
+        "POST /personal/watchlist/hold": lambda: _post_personal_hold(environ, runtime),
+        "POST /personal/watchlist/sell": lambda: _post_personal_sell(environ, runtime),
     }
 
     key = f"{method} {path}"
@@ -1184,18 +1191,22 @@ def _personal_watchlist(runtime: Runtime):
 
 def _post_personal_watchlist(environ, runtime: Runtime):
     from backend.personal import WatchlistStore
+    from backend.personal.stocks import resolve_stock
     body = _body(environ)
-    entry = WatchlistStore(runtime.root).add(body.get("ts_code"), body.get("name"), body.get("note"))
+    code, name = resolve_stock(runtime, body.get("ts_code") or body.get("name"))
+    entry = WatchlistStore(runtime.root).add(code, name or body.get("name"), body.get("note"))
     return _json("200 OK", {"status": "ok", "data": entry})
 
 
 def _post_personal_watchlist_remove(environ, runtime: Runtime):
     from backend.personal import WatchlistStore
+    from backend.personal.stocks import resolve_stock
     body = _body(environ)
-    removed = WatchlistStore(runtime.root).remove(body.get("ts_code"))
+    code, _ = resolve_stock(runtime, body.get("ts_code") or body.get("name"))
+    removed = WatchlistStore(runtime.root).remove(code)
     if not removed:
         return _json("404 Not Found", {"status": "error", "detail": "观察池中没有该股票"})
-    return _json("200 OK", {"status": "ok", "data": {"removed": body.get("ts_code")}})
+    return _json("200 OK", {"status": "ok", "data": {"removed": code}})
 
 
 def _personal_watchlist_status(runtime: Runtime):
@@ -1244,9 +1255,75 @@ def _personal_plan(environ, runtime: Runtime):
 
 def _post_personal_plan(environ, runtime: Runtime):
     from backend.personal.plans import PlanStore
-    return _json("200 OK", {"status": "ok", "data": PlanStore(runtime.root).save(_body(environ))})
+    from backend.personal.stocks import resolve_stock
+    body = _body(environ)
+    for key in ("candidates", "holdings"):
+        items = body.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and (item.get("ts_code") or item.get("name")):
+                    code, name = resolve_stock(runtime, item.get("ts_code") or item.get("name"))
+                    item["ts_code"] = code
+                    if key == "candidates" and not item.get("name"):
+                        item["name"] = name
+    return _json("200 OK", {"status": "ok", "data": PlanStore(runtime.root).save(body)})
 
 
 def _personal_pretrade(environ, runtime: Runtime):
     from backend.personal.service import pretrade_check
     return _json("200 OK", {"status": "ok", "data": pretrade_check(runtime, _query(environ))})
+
+
+def _personal_today(runtime: Runtime):
+    from backend.personal.service import today_view
+    return _json("200 OK", {"status": "ok", "data": today_view(runtime)})
+
+
+def _personal_stocks(environ, runtime: Runtime):
+    from backend.personal.stocks import search_stocks
+    q = _query(environ).get("q", "")
+    return _json("200 OK", {"status": "ok", "data": search_stocks(runtime, q, limit=10)})
+
+
+def _post_personal_hold(environ, runtime: Runtime):
+    from backend.personal import WatchlistStore
+    from backend.personal.stocks import resolve_stock
+    body = _body(environ)
+    code, name = resolve_stock(runtime, body.get("ts_code") or body.get("name"))
+    item = WatchlistStore(runtime.root).hold(code, cost=body.get("cost"), entry_date=body.get("entry_date"),
+                                             shares=body.get("shares"), name=name)
+    return _json("200 OK", {"status": "ok", "data": item})
+
+
+def _post_personal_sell(environ, runtime: Runtime):
+    from backend.personal import WatchlistStore
+    from backend.personal.stocks import resolve_stock
+    body = _body(environ)
+    code, _ = resolve_stock(runtime, body.get("ts_code") or body.get("name"))
+    record = WatchlistStore(runtime.root).sell(code, exit_date=body.get("exit_date"),
+                                               exit_price=body.get("exit_price"), note=body.get("note"))
+    return _json("200 OK", {"status": "ok", "data": record})
+
+
+def _post_personal_today_mark(environ, runtime: Runtime):
+    from backend.personal.executions import ExecutionStore
+    body = _body(environ)
+    record = ExecutionStore(runtime.root).mark(body.get("basis"), body.get("key"), body.get("status"),
+                                               body.get("note"))
+    return _json("200 OK", {"status": "ok", "data": record})
+
+
+def _personal_usage(environ, runtime: Runtime):
+    from backend.personal.usage import UsageStore
+    days = _query(environ).get("days") or 30
+    try:
+        days = min(max(int(days), 1), 400)
+    except (TypeError, ValueError):
+        raise ValueError("days 须为 1–400 的整数") from None
+    return _json("200 OK", {"status": "ok", "data": UsageStore(runtime.root).summary(days)})
+
+
+def _post_personal_usage(environ, runtime: Runtime):
+    from backend.personal.usage import UsageStore
+    return _json("200 OK", {"status": "ok", "data": UsageStore(runtime.root).record(_body(environ).get("event"))})
+

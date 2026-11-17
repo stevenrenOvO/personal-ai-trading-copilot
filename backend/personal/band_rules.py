@@ -218,9 +218,14 @@ def evaluate(
 def _exit(frame: pd.DataFrame, close: pd.Series, ma_info: dict, position: dict, p: BandParams) -> dict:
     entry_date = str(position.get("entry_date") or "")
     entry_price = float(position["entry_price"])
-    since = frame["trade_date"].astype(str) >= entry_date
+    dates = frame["trade_date"].astype(str)
+    since = dates >= entry_date
+    window_note = None
     if not since.any():
         return {"verdict": NO_DATA, "reason": f"复权日线未覆盖买入日 {entry_date}"}
+    if entry_date < dates.iloc[0]:
+        # Bought before the adjusted series starts: judge from what we have.
+        window_note = f"买入日早于复权数据起点 {dates.iloc[0]}，最高收盘自该日起算"
     # Bring the raw entry price onto the forward-adjusted scale.
     factor, note = 1.0, None
     raw_close = position.get("entry_close_raw")
@@ -248,4 +253,4 @@ def _exit(frame: pd.DataFrame, close: pd.Series, ma_info: dict, position: dict, 
     return {"verdict": verdict, "rule": rule, "cost_adjusted": _r(cost, 3), "close": _r(last, 3),
             "profit_pct": _r(profit, 4), "max_profit_pct": _r(max_profit, 4),
             "highest_close": _r(high, 3), "trailing_mode": trailing, "stop": _r(stop, 2),
-            "trailing_stop": _r(trail_stop, 2), "note": note}
+            "trailing_stop": _r(trail_stop, 2), "note": "；".join(n for n in (note, window_note) if n) or None}

@@ -30,11 +30,34 @@ def test_script_delimiters_balance():
 
 
 def test_v12_daily_loop_controls_exist_and_are_wired():
-    for element_id in ("ra-view", "wl-code", "wl-add", "wl-view", "pc-code", "pc-submit", "pc-result",
-                       "rt-date", "rt-side", "rt-price", "rt-shares", "rt-submit", "rt-list",
-                       "pl-date", "pl-form", "pl-submit"):
+    for element_id in ("wl-code", "wl-add", "wl-view", "pc-code", "pc-submit", "pc-result",
+                       "pl-date", "pl-form", "pl-submit", "rp-chase", "stock-options",
+                       "account-subnav", "pane-today", "pane-watch", "pane-plan", "pane-settings",
+                       "td-title", "td-notice", "td-summary", "td-actions", "date-prev", "date-next", "date-face", "us-view"):
         assert f'id="{element_id}"' in HTML, element_id
     for endpoint in ("/personal/account", "/personal/watchlist/status", "/personal/pretrade",
-                     "/personal/trades", "/personal/trades/void", "/personal/plan"):
+                     "/personal/plan", "/personal/today", "/personal/today/mark", "/personal/stocks",
+                     "/personal/watchlist/hold", "/personal/watchlist/sell", "/personal/usage"):
         assert endpoint in SCRIPT, endpoint
-    assert "loadDailyLoop();" in SCRIPT
+    assert "loadPane(currentPane);" in SCRIPT and "/personal/today" in SCRIPT
+
+
+def test_today_is_the_default_view():
+    assert '<button data-tab="account" class="active">' in HTML
+    assert '<section id="account" class="section active">' in HTML
+    assert '<section id="dashboard" class="section">' in HTML
+    assert 'class="pane active" id="pane-today"' in HTML
+    for removed in ('id="ra-view"', 'id="rt-submit"', 'id="sz-submit"', 'data-pane="tools"'):
+        assert removed not in HTML, removed
+    assert "loadTab(activeTab())" not in SCRIPT or "if (first === 'account') loadTab(first);" in SCRIPT
+
+
+def test_usage_events_used_in_the_page_are_valid_names():
+    import re as _re
+
+    events = set(_re.findall(r"track\('((?:tab|pane|action):[a-z_]+)'\)", SCRIPT))
+    events |= set(_re.findall(r"'(action:[a-z_]+)'", SCRIPT))
+    assert {"action:pretrade", "action:hold", "action:sell", "action:plan_save"} <= events
+    assert all(_re.fullmatch(r"(tab|pane|action):[a-z_]{1,32}", e) for e in events)
+    for tab in _re.findall(r'data-tab="([^"]+)"', HTML):
+        assert _re.fullmatch(r"[a-z_]{1,32}", tab), tab  # tab:<name> must be a valid event

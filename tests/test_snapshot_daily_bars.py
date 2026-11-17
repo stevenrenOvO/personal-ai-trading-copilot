@@ -115,6 +115,7 @@ def test_store_writes_whole_market_once_and_never_overwrites(tmp_path):
     kept = history.load(ts_codes=["000001.SZ"], start_date=DAY, end_date=DAY)
     assert kept.iloc[0]["close"] == 1
     assert '"source": "tencent_snapshot"' in history.get_state(SOURCE_STATE_PREFIX + DAY)
+    assert history.get_state(f"market_state:{DAY}")  # regime pinned for the next session
     # Same snapshot version again: no second write.
     assert auto_ingest.store_closing_snapshot(runtime, DAY, quotes) is None
 

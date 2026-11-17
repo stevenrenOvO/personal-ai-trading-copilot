@@ -1,6 +1,8 @@
 # personal-ai-trading-copilot
 
-Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.2.1，统一发布版本 `1.2.1`，Windows 本地运行）。
+Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.2.2，统一发布版本 `1.2.2`，Windows 本地运行）。
+
+V1.2.2 为日常可用性更新：按「每天收盘后看一次、第二天按单执行」设计——默认进入「今日 · 账户」，执行单只依据收盘价，给出可直接在券商 App 设置的限价买入与止损条件单，并可勾选执行或放弃；持仓并入观察池（只需成本价和日期）；全部输入可用股票名称；分区为今日 / 观察池 / 计划 / 设置；紧凑的交易日选择。详见 `docs/V1.2.2-发布说明.md`。
 
 V1.2.1 为稳定性补丁：观察池复权数据并发获取、次日早上补写前一天收盘快照、快照来源记录不再被覆盖、交易前检查加入涨跌停判断、前端交互测试覆盖 V1.2 页面。详见 `docs/V1.2.1-发布说明.md`。
 
@@ -68,7 +70,7 @@ http://127.0.0.1:8000/
 - `/ai/copilot` `/board/ladder` `/data/latest` `/data/history/dates`
 - `/opportunities/candidates` `/opportunities/setups` `/opportunities/plan`
 - `/data/ingest/status`
-- V1.2 我的账户：`/personal/risk-profile`（GET/POST） `/personal/sizing` `/personal/watchlist`（GET/POST）
+- V1.2 我的账户：`/personal/today`（执行单） `/personal/today/mark`（POST） `/personal/stocks`（名称查找） `/personal/watchlist/hold` `/personal/watchlist/sell`（POST） `/personal/usage`（本机使用记录） `/personal/risk-profile`（GET/POST） `/personal/sizing` `/personal/watchlist`（GET/POST）
   `/personal/watchlist/remove`（POST） `/personal/watchlist/status` `/personal/pretrade`
   `/personal/account` `/personal/trades`（GET/POST） `/personal/trades/void`（POST） `/personal/plan`（GET/POST）
 

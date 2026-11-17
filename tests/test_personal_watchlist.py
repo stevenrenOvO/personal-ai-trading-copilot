@@ -28,7 +28,7 @@ def test_add_normalizes_code_and_persists(tmp_path):
     assert entry["added_at"]
     assert [i["ts_code"] for i in WatchlistStore(tmp_path).list()] == ["600519.SH"]
     data = json.loads(store.path.read_text(encoding="utf-8"))
-    assert list(data) == ["items"]
+    assert list(data) == ["items", "closed"]
 
 
 def test_duplicate_rejected(tmp_path):
