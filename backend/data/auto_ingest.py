@@ -105,17 +105,37 @@ _SNAPSHOT_CHECK_SECONDS = 30.0
 _snapshot_checked: dict[str, float] = {}
 
 
-def _schedule_closing_snapshot(runtime: Any, day: str, quote_service: Any = None) -> None:
+def closing_snapshot_days(session: Any, day: str) -> list[str]:
+    """Sessions whose closing snapshot may still be in the quote cache.
+
+    Besides the current trading day this is the last *confirmed* session: when
+    the app is opened the next morning before the open, the cached snapshot is
+    yesterday's close and is the only cheap source for yesterday's bars.
+    """
+    days = [day]
+    try:
+        expected = session.describe_cached().get("expected_daily_date")
+    except Exception:  # noqa: BLE001
+        expected = None
+    if expected and str(expected) != day and str(expected) < day:
+        days.append(str(expected))
+    return days
+
+
+def _schedule_closing_snapshot(runtime: Any, days: list[str], quote_service: Any = None) -> None:
     now = time.monotonic()
-    if now - _snapshot_checked.get(day, -_SNAPSHOT_CHECK_SECONDS) < _SNAPSHOT_CHECK_SECONDS:
+    key = tuple(days)
+    if now - _snapshot_checked.get(key, -_SNAPSHOT_CHECK_SECONDS) < _SNAPSHOT_CHECK_SECONDS:
         return
     if not _snapshot_lock.acquire(blocking=False):
         return  # already being written
-    _snapshot_checked[day] = now
+    _snapshot_checked[key] = now
 
     def work() -> None:
         try:
-            store_closing_snapshot(runtime, day, quote_service)
+            # Only the day the snapshot actually belongs to will match.
+            for target in days:
+                store_closing_snapshot(runtime, target, quote_service)
         finally:
             _snapshot_lock.release()
 
@@ -200,7 +220,7 @@ def ensure_today_bars(
     if day and backfill is None and rows_on is None:
         # Cheapest path to today's bars: the closing snapshot, one request
         # for the whole market. Runs even while a long backfill is going.
-        _schedule_closing_snapshot(runtime, day, quote_service)
+        _schedule_closing_snapshot(runtime, closing_snapshot_days(session, day), quote_service)
     if not day or _state["running"]:
         return False
 

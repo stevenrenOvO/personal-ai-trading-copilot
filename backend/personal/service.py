@@ -97,8 +97,11 @@ def watchlist_status(runtime) -> dict[str, Any]:
     account = RealTradeStore(runtime.root).account(profile)
     held = {p["ts_code"]: p for p in account["positions"]}
     store = AdjustedBarStore(runtime.root)
+    entries = WatchlistStore(runtime.root).list()
+    if as_of:
+        store.prefetch([entry["ts_code"] for entry in entries], as_of)
     items = []
-    for entry in WatchlistStore(runtime.root).list():
+    for entry in entries:
         status = stock_status(runtime, entry["ts_code"], as_of=as_of, position=held.get(entry["ts_code"]),
                               store=store)
         status.update(name=entry.get("name", ""), note=entry.get("note", ""), held=entry["ts_code"] in held)
@@ -164,6 +167,9 @@ def account_view(runtime) -> dict[str, Any]:
     codes = [p["ts_code"] for p in account["positions"]]
     prices = latest_prices(runtime, codes)
     store = AdjustedBarStore(runtime.root)
+    as_of = evaluation_day(runtime)
+    if as_of and codes:
+        store.prefetch(codes, as_of)
     exposure = 0.0
     for pos in account["positions"]:
         quote = prices.get(pos["ts_code"])
@@ -175,13 +181,55 @@ def account_view(runtime) -> dict[str, Any]:
                        weight=round(value / profile.capital, 4))
         else:
             pos.update(price=None, market_value=None, unrealized_pnl=None, weight=None)
-        status = stock_status(runtime, pos["ts_code"], position=pos, store=store)
+        status = stock_status(runtime, pos["ts_code"], as_of=as_of, position=pos, store=store)
         pos["exit"] = status.get("exit")
         pos["status_basis"] = status.get("basis")
     account.update(capital=profile.capital, profile_source=source, exposure=round(exposure, 2),
                    exposure_pct=round(exposure / profile.capital, 4),
                    unpriced=[p["ts_code"] for p in account["positions"] if p.get("price") is None])
     return account
+
+
+def limit_rate(ts_code: str, name: str = "") -> float:
+    """Daily price-limit ratio by board (main board ST stocks: 5%)."""
+    symbol = ts_code.split(".")[0]
+    if ts_code.endswith(".BJ"):
+        return 0.30
+    if symbol.startswith(("30", "688")):
+        return 0.20
+    return 0.05 if "ST" in str(name).upper() else 0.10
+
+
+def limit_checks(code: str, row: Optional[dict], meta: Any, entry_price: Any) -> list[tuple[str, str]]:
+    """(level, detail) items about price limits; empty when nothing to flag.
+
+    Intraday the limit is today's (from the previous close). After the close
+    a planned entry is for the next session, whose limit comes from today's close.
+    """
+    if not row:
+        return []
+    try:
+        entry = float(entry_price) if entry_price not in (None, "") else None
+        price, pre_close = float(row["price"]), float(row["pre_close"])
+    except (TypeError, ValueError, KeyError):
+        return []
+    if price <= 0 or pre_close <= 0:
+        return []
+    rate = limit_rate(code, row.get("name", ""))
+    final = getattr(meta, "status", None) == "final"
+    out: list[tuple[str, str]] = []
+    today_up = round(pre_close * (1 + rate), 2)
+    if price >= today_up:
+        out.append(("warn", f"今日{'收于' if final else '当前封'}涨停 {today_up:.2f}，"
+                            f"{'下一交易日可能高开或一字板，难按计划价成交' if final else '排队买入很可能无法成交'}"))
+    base, label = (price, "下一交易日") if final else (pre_close, "今日")
+    up = round(base * (1 + rate), 2)
+    down = round(base * (1 - rate), 2)
+    if entry is not None and entry > up:
+        out.append(("fail", f"买入价 {entry:.2f} 高于{label}涨停价 {up:.2f}，无法成交"))
+    elif entry is not None and entry < down:
+        out.append(("fail", f"买入价 {entry:.2f} 低于{label}跌停价 {down:.2f}，无法成交"))
+    return out
 
 
 # -- pre-trade check -------------------------------------------------------------
@@ -259,6 +307,19 @@ def pretrade_check(runtime, query: dict[str, Any]) -> dict[str, Any]:
             f"{REGIME_LABELS[regime]}上限 {cap:.0%}，已用 {account['exposure_pct']:.1%}，余量约 {max(room, 0):,.0f} 元")
     else:
         add("exposure", "总仓位余量", "warn", "市场状态未知，未检查总仓位上限")
+
+    # 5. price limits (needs today's snapshot)
+    snap, snap_meta = _snapshot(runtime)
+    row = None
+    if snap is not None:
+        match = snap[snap["ts_code"] == code]
+        row = match.iloc[0].to_dict() if not match.empty else None
+    limits = limit_checks(code, row, snap_meta, entry_price)
+    if limits:
+        for level, detail in limits:
+            add("limit", "涨跌停", level, detail)
+    elif row is not None:
+        add("limit", "涨跌停", "pass", "买入价在涨跌停范围内，未封涨停")
 
     if account["unpriced"]:
         add("pricing", "持仓估值", "warn", f"{', '.join(account['unpriced'])} 没有最新价，总仓位可能低估")

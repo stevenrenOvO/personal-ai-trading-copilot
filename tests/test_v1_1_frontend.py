@@ -27,6 +27,10 @@ import pytest
     "unknown_ai_trade_permission",
     "personal_sizing",
     "personal_profile_save",
+    "daily_loop_render",
+    "pretrade_render",
+    "real_trade_submit",
+    "plan_submit",
 ])
 def test_dashboard_interactions(scenario):
     node = shutil.which("node")

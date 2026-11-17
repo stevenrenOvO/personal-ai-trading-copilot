@@ -320,3 +320,67 @@ def test_daily_loop_api(tmp_path, offline_qfq):
     assert code == 400
     saved = json.loads((tmp_path / "personal" / "real_trades.json").read_text(encoding="utf-8"))
     assert len(saved["trades"]) == 1
+
+
+# -- 1.2.1 fixes --------------------------------------------------------------------
+
+def test_prefetch_downloads_in_parallel_and_reports_failures(tmp_path):
+    import threading
+    import time as _time
+
+    active, peak, lock = [0], [0], threading.Lock()
+
+    def slow(code):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        _time.sleep(0.2)
+        with lock:
+            active[0] -= 1
+        if code == "000004.SZ":
+            raise TimeoutError("vendor down")
+        return _qfq()
+
+    codes = [f"00000{i}.SZ" for i in range(1, 7)]
+    store = AdjustedBarStore(tmp_path, fetcher=slow)
+    started = _time.monotonic()
+    store.prefetch(codes, "20261113")
+    assert _time.monotonic() - started < 0.2 * len(codes) / 2  # well under the sequential 1.2 s
+    assert peak[0] > 1
+
+    calls = []
+    store._fetch = lambda code: calls.append(code) or _qfq()
+    frame, basis = store.bars("000001.SZ", "20261113")
+    assert not frame.empty and basis["adjusted"] and calls == []  # served from the prefetch
+    _, failed = store.bars("000004.SZ", "20261113")
+    assert any("TimeoutError" in w for w in failed["warnings"]) and calls == []
+
+
+def test_default_fetcher_uses_short_timeout(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr("backend.data.providers.tencent.fetch_qfq_daily",
+                        lambda code, **kw: seen.update(kw) or _qfq())
+    AdjustedBarStore(tmp_path).bars("000001.SZ", "20261113")
+    assert seen["timeout"] <= 5
+
+
+def test_limit_checks_by_board_and_session():
+    from types import SimpleNamespace
+
+    from backend.personal.service import limit_checks, limit_rate
+
+    assert limit_rate("600519.SH") == 0.10 and limit_rate("600001.SH", "*ST某某") == 0.05
+    assert limit_rate("300750.SZ", "ST创业") == 0.20 and limit_rate("830799.BJ") == 0.30
+    intraday, final = SimpleNamespace(status="ok"), SimpleNamespace(status="final")
+    sealed = {"price": 11.0, "pre_close": 10.0, "name": "某股"}
+    items = limit_checks("600000.SH", sealed, intraday, 11.0)
+    assert [lvl for lvl, _ in items] == ["warn"] and "封涨停" in items[0][1]
+    items = limit_checks("600000.SH", {"price": 10.2, "pre_close": 10.0}, intraday, 11.5)
+    assert items == [("fail", "买入价 11.50 高于今日涨停价 11.00，无法成交")]
+    # After the close the next session's limit comes from today's close (10.2 -> 11.22).
+    assert limit_checks("600000.SH", {"price": 10.2, "pre_close": 10.0}, final, 11.2) == []
+    items = limit_checks("600000.SH", {"price": 10.2, "pre_close": 10.0}, final, 11.3)
+    assert items[0][0] == "fail" and "下一交易日涨停价 11.22" in items[0][1]
+    st = limit_checks("600001.SH", {"price": 10.5, "pre_close": 10.0, "name": "ST某某"}, intraday, 10.5)
+    assert st and st[0][0] == "warn"
+    assert limit_checks("600000.SH", None, intraday, 10) == []

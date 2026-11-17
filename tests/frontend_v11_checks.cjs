@@ -29,6 +29,10 @@ function makePage(storage = new Map()) {
     addEventListener() {}
     prepend(el) { elements.set(el.id, el); }
     click() { return this.onclick?.(); }
+    // Rendered children are plain HTML strings here; delegated buttons are not modelled.
+    querySelectorAll() { return []; }
+    querySelector() { return null; }
+    scrollIntoView() {}
   }
   for (const match of html.matchAll(/<(\w+)\b([^>]*\bid="([^"]+)"[^>]*)>/g)) {
     elements.set(match[3], new Element(match[3], match[1], match[2]));
@@ -52,7 +56,7 @@ function makePage(storage = new Map()) {
   let responder = () => { throw new Error('Unstubbed HTTP request'); };
   const context = vm.createContext({document, window:{addEventListener() {}}, console,
     sessionStorage:{getItem:key => storage.get(key) || null, setItem:(key, value) => storage.set(key, value), removeItem:key => storage.delete(key)},
-    crypto:webcrypto, Uint8Array, AbortController, setTimeout, clearTimeout, setInterval() {},
+    crypto:webcrypto, Uint8Array, AbortController, URLSearchParams, setTimeout, clearTimeout, setInterval() {},
     fetch:(url, opts) => responder(url, opts),
   });
   vm.runInContext(script, context, {filename:'dashboard.js'});
@@ -415,7 +419,116 @@ async function personal_profile_save() {
   assert.match(e.get('rp-result').innerHTML, /已保存/);
 }
 
-const scenarios = {decision_fields, decision_retry, stale_date, audit_failure, failure_status, date_selection_during_refresh, refresh_waits_for_view, unconfirmed_market, health_without_samples, available_dates, dashboard_basis, refresh_new_complete_day, analysis_coverage_labels, structured_ai_results, structured_ai_empty_and_stale, readiness_index_and_demo_labels, unknown_ai_trade_permission, personal_sizing, personal_profile_save};
+// ---- V1.2 daily loop -------------------------------------------------------
+const PROFILE = {capital:12000, risk_per_trade:0.01, max_risk_per_trade:0.02, max_single_weight:0.2, first_entry_min:0.1,
+  first_entry_max:0.15, max_stop_pct:0.08, exposure_caps:{strong:0.5, range:0.5, weak:0.2}, lot_size:100, min_commission:5};
+function dailyLoopReply(url) {
+  if (url === '/personal/risk-profile') return response({status:'ok', meta:{source:'saved'}, data:PROFILE});
+  if (url === '/personal/account') return wrapped({capital:12000, cash:10770, exposure:1230, exposure_pct:0.1025, realized_pnl:0,
+    unpriced:[], positions:[{ts_code:'000001.SZ', name:'平安银行', shares:100, avg_cost:12.3, entry_date:'20261117', price:12.3,
+      price_source:'本地日线收盘', market_value:1230, weight:0.1025, unrealized_pnl:0,
+      exit:{verdict:'离场：有效跌破21日线', rule:'盈利未达 15%（最高 0.0%），按21日线', stop:11.88}, status_basis:{warnings:[]}}]});
+  if (url === '/personal/watchlist/status') return wrapped({evaluation_day:'20261117', items:[{ts_code:'600519.SH', name:'贵州茅台',
+    entry:'买点：金叉放量', held:false, weekly:{week_close:1435.26, ma:1318.11, rising:true},
+    macd:{dif:1.2, cross:{date:'20261117', volume_ratio:1.8}}, ma:{ma21:1399.6, distance_pct:0.04, suggested_stop:1385.61},
+    conditions:[{label:'周收盘在上升的13周均线之上', passed:true, detail:'周收盘 1435.26'}],
+    basis:{adjusted:true, source:'tencent_qfq', fetched_at:'2026-11-17T16:17:00', last_date:'20261117', appended_raw_dates:[], warnings:['复权数据刚刚获取失败，稍后自动重试']}}]});
+  if (url.startsWith('/personal/trades')) return wrapped({trades:[{id:'R20261117-0001', trade_date:'20261117', ts_code:'000001.SZ',
+    name:'平安银行', side:'BUY', price:12.25, shares:100, amount:1225, fee:5, fee_source:'estimated', followed_plan:false,
+    reason:'突破', voided:false}]});
+  if (url.startsWith('/personal/plan')) return response({status:'ok', meta:{dates:['20261117']}, data:{date:'20261117', revision:2,
+    updated_at:'2026-11-17T16:30:00', candidates:[{ts_code:'600519.SH', entry_price:1440, stop_price:1385.61, shares:null,
+    entry_condition:'金叉放量'}], holdings:[{ts_code:'000001.SZ', action:'离场'}], market_note:'弱势', note:''}});
+  throw new Error('Unstubbed ' + url);
+}
+
+async function daily_loop_render() {
+  const page = makePage(); const {elements:e} = page;
+  page.setFetch(url => dailyLoopReply(url));
+  await page.run("loadAccount()");
+  for (let i = 0; i < 5; i++) await flush();
+  assert.match(e.get('ra-view').innerHTML, /10,770 元/);
+  assert.match(e.get('ra-view').innerHTML, /离场：有效跌破21日线/);
+  assert.match(e.get('ra-view').innerHTML, /离场线 11\.88/);
+  assert.match(e.get('wl-view').innerHTML, /买点：金叉放量/);
+  assert.match(e.get('wl-view').innerHTML, /2026-11-17 金叉 量比 1\.80/);
+  assert.match(e.get('wl-view').innerHTML, /前复权（tencent_qfq/);
+  assert.match(e.get('wl-view').innerHTML, /复权数据刚刚获取失败/);
+  assert.match(e.get('rt-list').innerHTML, /R20261117-0001/);
+  assert.match(e.get('rt-list').innerHTML, /计划外/);
+  assert.match(e.get('rt-list').innerHTML, /data-void="R20261117-0001"/);
+  assert.match(e.get('pl-saved').innerHTML, /第 2 版/);
+  assert.match(e.get('pl-form').innerHTML, /value="600519\.SH"/);
+  assert.match(e.get('pl-form').innerHTML, /<option selected>离场<\/option>/);
+  assert.doesNotMatch(e.get('ra-view').innerHTML + e.get('wl-view').innerHTML, /<table/);
+}
+
+async function pretrade_render() {
+  const page = makePage(); const {elements:e} = page;
+  let requested;
+  e.get('pc-code').value = ' 600519.SH '; e.get('pc-stop').value = '1385.61'; e.get('pc-risk').value = '0.015';
+  page.setFetch(url => { requested = url; return wrapped({ts_code:'600519.SH', verdict:'不通过',
+    inputs:{entry_price:1457.7, stop_price:1385.61, stop_source:'手动填写'},
+    market:{state:'弱势', source:'全市场行情快照', date:'20261117'},
+    checks:[{label:'仓位', level:'fail', detail:'一手（100 股）就违反：单票上限 20%'},
+            {label:'涨跌停', level:'warn', detail:'今日收于涨停 1457.70'}],
+    status:{conditions:[], basis:null}, note:'检查只说明是否符合你自己的规则，不构成买卖建议；是否下单由你决定。'}); });
+  await e.get('pc-submit').onclick();
+  assert.equal(requested, '/personal/pretrade?ts_code=600519.SH&stop=1385.61&risk_pct=0.015');
+  assert.match(e.get('pc-result').innerHTML, /class="big danger">不通过/);
+  assert.match(e.get('pc-result').innerHTML, /今日收于涨停/);
+  assert.match(e.get('pc-result').innerHTML, /不构成买卖建议/);
+}
+
+async function real_trade_submit() {
+  const page = makePage(); const {elements:e} = page;
+  const values = {'rt-date':'20261117', 'rt-code':'000001.SZ', 'rt-name':'平安银行', 'rt-side':'SELL', 'rt-price':'12.5',
+    'rt-shares':'100', 'rt-fee':'', 'rt-followed':'false', 'rt-reason':'跌破21日线'};
+  for (const [id, value] of Object.entries(values)) e.get(id).value = value;
+  let body;
+  page.setFetch((url, opts) => {
+    if (opts && opts.method === 'POST') { body = JSON.parse(opts.body); return wrapped({id:'R20261117-0002', side:'SELL',
+      ts_code:'000001.SZ', shares:100, fee:5.63, fee_source:'estimated'}); }
+    return dailyLoopReply(url);
+  });
+  await e.get('rt-submit').onclick();
+  assert.deepEqual(body, {trade_date:'20261117', ts_code:'000001.SZ', name:'平安银行', side:'SELL', price:12.5, shares:100,
+    reason:'跌破21日线', followed_plan:false});
+  assert.match(e.get('rt-result').innerHTML, /已记录 R20261117-0002：卖出/);
+  assert.match(e.get('rt-result').innerHTML, /（估算）/);
+  assert.equal(e.get('rt-price').value, '');
+  page.setFetch(() => response({status:'error', detail:'000001.SZ 在 20261117 持有 0 股，不能卖出 100 股'}, 400));
+  e.get('rt-price').value = '12.5'; e.get('rt-shares').value = '100';
+  await e.get('rt-submit').onclick();
+  assert.match(e.get('rt-result').innerHTML, /不能卖出 100 股/);
+}
+
+async function plan_submit() {
+  const page = makePage(); const {elements:e} = page;
+  page.setFetch(url => dailyLoopReply(url));
+  await page.run("renderPlanForm(null)");
+  // renderPlanForm writes HTML; the fake DOM registers inputs by id only from the static page.
+  for (const field of ['code', 'entry', 'stop', 'shares', 'cond']) {
+    for (let i = 0; i < 3; i++) { const id = `pl-c${i}-${field}`; e.set(id, Object.assign(page.run(`document.createElement('input')`), {id, value:''})); }
+  }
+  e.get('pl-date').value = '20261117';
+  e.get('pl-c0-code').value = '600519.SH'; e.get('pl-c0-entry').value = '1440'; e.get('pl-c0-stop').value = '1385.61';
+  e.get('pl-c0-cond').value = '金叉放量';
+  e.get('pl-market').value = '弱势'; e.get('pl-note').value = '';
+  let body;
+  page.setFetch((url, opts) => {
+    if (opts && opts.method === 'POST') { body = JSON.parse(opts.body); return wrapped({date:'20261117', revision:1}); }
+    return dailyLoopReply(url);
+  });
+  await e.get('pl-submit').onclick();
+  assert.deepEqual(body.candidates, [{ts_code:'600519.SH', entry_condition:'金叉放量', entry_price:1440, stop_price:1385.61}]);
+  assert.equal(body.date, '20261117');
+  assert.equal(body.market_note, '弱势');
+  assert.match(e.get('pl-result').innerHTML, /已保存 2026-11-17 计划（第 1 版）/);
+}
+
+const scenarios = {decision_fields, decision_retry, stale_date, audit_failure, failure_status, date_selection_during_refresh, refresh_waits_for_view, unconfirmed_market, health_without_samples, available_dates, dashboard_basis, refresh_new_complete_day, analysis_coverage_labels, structured_ai_results, structured_ai_empty_and_stale, readiness_index_and_demo_labels, unknown_ai_trade_permission, personal_sizing, personal_profile_save,
+  daily_loop_render, pretrade_render, real_trade_submit, plan_submit};
 const scenario = scenarios[process.argv[2]];
 if (!scenario) throw new Error('Unknown frontend scenario');
 scenario().then(() => process.stdout.write('ok\n')).catch(err => {console.error(err); process.exitCode = 1;});

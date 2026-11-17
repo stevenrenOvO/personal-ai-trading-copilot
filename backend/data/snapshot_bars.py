@@ -90,8 +90,7 @@ def persist_closing_snapshot(history: Any, frame: pd.DataFrame, meta: Any,
         return None
     bars = snapshot_to_bars(frame, trading_day)
     inserted = history.insert_missing(bars)
-    record = {
-        "trade_date": str(trading_day),
+    run = {
         "source": f"{_meta_value(meta, 'source') or 'unknown'}_snapshot",
         "quote_time": _meta_value(meta, "quote_time"),
         "as_of": _meta_value(meta, "as_of"),
@@ -99,6 +98,30 @@ def persist_closing_snapshot(history: Any, frame: pd.DataFrame, meta: Any,
         "valid_bars": int(len(bars)),
         "inserted": int(inserted),
     }
-    history.set_state(SOURCE_STATE_PREFIX + str(trading_day),
-                      json.dumps(record, ensure_ascii=False))
+    key = SOURCE_STATE_PREFIX + str(trading_day)
+    previous = _load_record(history.get_state(key))
+    if previous is not None and not inserted:
+        # A later re-check (e.g. after a restart or the next morning) that adds
+        # nothing must not erase which run actually wrote the day's bars.
+        return {**previous, "inserted": 0, "unchanged": True}
+    runs = (previous or {}).get("runs", []) + [run]
+    record = {"trade_date": str(trading_day), **run,
+              "inserted_total": sum(r.get("inserted", 0) for r in runs), "runs": runs}
+    history.set_state(key, json.dumps(record, ensure_ascii=False))
+    return record
+
+
+def _load_record(raw: Optional[str]) -> Optional[dict[str, Any]]:
+    """Existing source record; records written before ``runs`` existed become one run."""
+    if not raw:
+        return None
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    if "runs" not in record:
+        record["runs"] = [{k: record.get(k) for k in
+                           ("source", "quote_time", "as_of", "snapshot_rows", "valid_bars", "inserted")}]
     return record
