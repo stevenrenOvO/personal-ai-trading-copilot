@@ -235,6 +235,11 @@ data/*.jsonl
 data/paper/
 data/backtest/
 data/demo/
+# V1.2 personal account: real trades, plans, watchlist, risk settings
+data/personal/
+*.db-wal
+*.db-shm
+*.lock
 server*.log
 server.pid
 server.process.json

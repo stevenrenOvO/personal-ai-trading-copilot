@@ -175,6 +175,20 @@ def dispatch(environ: dict, start_response, runtime: Runtime) -> bool:
         "GET /data/history/dates": lambda: _data_history_dates(runtime),
         "GET /data/ingest/status": lambda: _ingest_status(runtime),
         "GET /ai/copilot": lambda: _ai_copilot(environ, runtime),
+        "GET /personal/risk-profile": lambda: _personal_risk_profile(runtime),
+        "POST /personal/risk-profile": lambda: _post_personal_risk_profile(environ, runtime),
+        "GET /personal/sizing": lambda: _personal_sizing(environ, runtime),
+        "GET /personal/watchlist": lambda: _personal_watchlist(runtime),
+        "POST /personal/watchlist": lambda: _post_personal_watchlist(environ, runtime),
+        "POST /personal/watchlist/remove": lambda: _post_personal_watchlist_remove(environ, runtime),
+        "GET /personal/watchlist/status": lambda: _personal_watchlist_status(runtime),
+        "GET /personal/account": lambda: _personal_account(runtime),
+        "GET /personal/trades": lambda: _personal_trades(environ, runtime),
+        "POST /personal/trades": lambda: _post_personal_trade(environ, runtime),
+        "POST /personal/trades/void": lambda: _post_personal_trade_void(environ, runtime),
+        "GET /personal/plan": lambda: _personal_plan(environ, runtime),
+        "POST /personal/plan": lambda: _post_personal_plan(environ, runtime),
+        "GET /personal/pretrade": lambda: _personal_pretrade(environ, runtime),
     }
 
     key = f"{method} {path}"
@@ -1128,3 +1142,111 @@ def _data_history_dates(runtime: Runtime):
 def _ingest_status(runtime: Runtime):
     from backend.data.auto_ingest import status
     return _json("200 OK", {"status": "ok", "data": status(runtime)})
+
+
+# ---- V1.2 personal account: risk profile and position sizing ----
+
+def _personal_risk_profile(runtime: Runtime):
+    from backend.personal import RiskProfileStore
+    profile, source = RiskProfileStore(runtime.root).load()
+    return _json("200 OK", {"status": "ok", "meta": {"source": source}, "data": profile.to_dict()})
+
+
+def _post_personal_risk_profile(environ, runtime: Runtime):
+    from backend.personal import RiskProfileStore
+    profile = RiskProfileStore(runtime.root).update(_body(environ))
+    return _json("200 OK", {"status": "ok", "meta": {"source": "saved"}, "data": profile.to_dict()})
+
+
+def _personal_sizing(environ, runtime: Runtime):
+    from backend.personal import RiskProfileStore, size_position
+    q = _query(environ)
+    if "entry" not in q or "stop" not in q:
+        raise ValueError("请提供买入价 entry 与止损价 stop")
+    profile, source = RiskProfileStore(runtime.root).load()
+    result = size_position(
+        profile, q["entry"], q["stop"],
+        risk_pct=q.get("risk_pct"),
+        market_state=q.get("market_state") or None,
+        current_exposure=q.get("exposure"),
+        existing_position=q.get("existing"),
+        available_cash=q.get("cash"),
+    )
+    return _json("200 OK", {"status": "ok", "profile_source": source, "data": result})
+
+
+def _personal_watchlist(runtime: Runtime):
+    from backend.personal import WATCHLIST_LIMIT, WatchlistStore
+    items = WatchlistStore(runtime.root).list()
+    return _json("200 OK", {"status": "ok", "meta": {"limit": WATCHLIST_LIMIT},
+                            "data": {"items": items, "count": len(items)}})
+
+
+def _post_personal_watchlist(environ, runtime: Runtime):
+    from backend.personal import WatchlistStore
+    body = _body(environ)
+    entry = WatchlistStore(runtime.root).add(body.get("ts_code"), body.get("name"), body.get("note"))
+    return _json("200 OK", {"status": "ok", "data": entry})
+
+
+def _post_personal_watchlist_remove(environ, runtime: Runtime):
+    from backend.personal import WatchlistStore
+    body = _body(environ)
+    removed = WatchlistStore(runtime.root).remove(body.get("ts_code"))
+    if not removed:
+        return _json("404 Not Found", {"status": "error", "detail": "观察池中没有该股票"})
+    return _json("200 OK", {"status": "ok", "data": {"removed": body.get("ts_code")}})
+
+
+def _personal_watchlist_status(runtime: Runtime):
+    from backend.personal.service import watchlist_status
+    return _json("200 OK", {"status": "ok", "data": watchlist_status(runtime)})
+
+
+def _personal_account(runtime: Runtime):
+    from backend.personal.service import account_view
+    return _json("200 OK", {"status": "ok", "data": account_view(runtime)})
+
+
+def _personal_trades(environ, runtime: Runtime):
+    from backend.personal.real_account import RealTradeStore
+    q = _query(environ)
+    trades = RealTradeStore(runtime.root).list(date=q.get("date") or None)
+    return _json("200 OK", {"status": "ok", "data": {"trades": trades, "date": q.get("date")}})
+
+
+def _post_personal_trade(environ, runtime: Runtime):
+    from backend.personal import RiskProfileStore
+    from backend.personal.real_account import RealTradeStore
+    profile, _ = RiskProfileStore(runtime.root).load()
+    trade = RealTradeStore(runtime.root).record(_body(environ), profile)
+    return _json("200 OK", {"status": "ok", "data": trade})
+
+
+def _post_personal_trade_void(environ, runtime: Runtime):
+    from backend.personal.real_account import RealTradeStore
+    body = _body(environ)
+    try:
+        trade = RealTradeStore(runtime.root).void(body.get("id"), body.get("reason"))
+    except KeyError as exc:
+        return _json("404 Not Found", {"status": "error", "detail": exc.args[0]})
+    return _json("200 OK", {"status": "ok", "data": trade})
+
+
+def _personal_plan(environ, runtime: Runtime):
+    from backend.personal.plans import MAX_NEW_CANDIDATES, PlanStore
+    q = _query(environ)
+    store = PlanStore(runtime.root)
+    plan = store.get(q["date"]) if q.get("date") else None
+    return _json("200 OK", {"status": "ok", "meta": {"dates": store.dates(), "max_candidates": MAX_NEW_CANDIDATES},
+                            "data": plan})
+
+
+def _post_personal_plan(environ, runtime: Runtime):
+    from backend.personal.plans import PlanStore
+    return _json("200 OK", {"status": "ok", "data": PlanStore(runtime.root).save(_body(environ))})
+
+
+def _personal_pretrade(environ, runtime: Runtime):
+    from backend.personal.service import pretrade_check
+    return _json("200 OK", {"status": "ok", "data": pretrade_check(runtime, _query(environ))})

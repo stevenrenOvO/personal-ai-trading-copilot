@@ -368,7 +368,54 @@ async function unknown_ai_trade_permission() {
   assert.match(e.get('ai-output').innerHTML, /交易计划依据日期/);
 }
 
-const scenarios = {decision_fields, decision_retry, stale_date, audit_failure, failure_status, date_selection_during_refresh, refresh_waits_for_view, unconfirmed_market, health_without_samples, available_dates, dashboard_basis, refresh_new_complete_day, analysis_coverage_labels, structured_ai_results, structured_ai_empty_and_stale, readiness_index_and_demo_labels, unknown_ai_trade_permission};
+async function personal_sizing() {
+  const page = makePage(); const {elements:e} = page;
+  let requested;
+  e.get('sz-entry').value = '10'; e.get('sz-stop').value = '';
+  await e.get('sz-submit').onclick();
+  assert.match(e.get('sz-result').innerHTML, /请填写买入价和止损价/);
+  e.get('sz-stop').value = '9.3'; e.get('sz-regime').value = 'weak';
+  page.setFetch(url => { requested = url; return wrapped({verdict:'可买', lots:1, shares:100, value:1000, weight:0.0833,
+    risk_amount:80.47, risk_pct_of_capital:0.0067, stop_pct:0.07, limited_by:['单笔风险 1.00%（120 元）'],
+    warnings:['仓位 8.3% 低于首仓下限 10%，受风险预算限制只能小仓位'],
+    one_lot:{shares:100, value:1000, weight:0.0833, risk_amount:80.47, risk_pct_of_capital:0.0067}}); });
+  await e.get('sz-submit').onclick();
+  assert.equal(requested, '/personal/sizing?entry=10&stop=9.3&market_state=weak');
+  assert.match(e.get('sz-result').innerHTML, /规则允许：1 手/);
+  assert.match(e.get('sz-result').innerHTML, /再多一手会超过：单笔风险/);
+  assert.match(e.get('sz-result').innerHTML, /低于首仓下限/);
+  page.setFetch(() => wrapped({verdict:'不可买', lots:0, stop_pct:0.06, reason:'一手（100 股）就违反：单票上限 20%',
+    blocked_by:[{rule:'single_weight', label:'单票上限 20%', limit:2400, actual:2505}], one_lot_needs_risk_pct:0.0134,
+    warnings:[], one_lot:{shares:100, value:2500, weight:0.2083, risk_amount:161.18, risk_pct_of_capital:0.0134}}));
+  await e.get('sz-submit').onclick();
+  assert.match(e.get('sz-result').innerHTML, /不可买/);
+  assert.match(e.get('sz-result').innerHTML, /单票上限 20%/);
+  assert.equal(e.get('sz-submit').disabled, false);
+}
+
+async function personal_profile_save() {
+  const page = makePage(); const {elements:e} = page;
+  page.setFetch(() => response({status:'ok', meta:{source:'default'}, data:{capital:12000, risk_per_trade:0.01,
+    max_risk_per_trade:0.02, max_single_weight:0.2, first_entry_min:0.1, first_entry_max:0.15, max_stop_pct:0.08,
+    exposure_caps:{strong:0.5, range:0.5, weak:0.2}, lot_size:100, min_commission:5}}));
+  await page.run("loadAccount()");
+  assert.match(e.get('rp-view').innerHTML, /当前为默认参数/);
+  assert.equal(e.get('rp-capital').value, '12000');
+  assert.equal(e.get('rp-risk').value, '1');
+  e.get('rp-capital').value = '15000';
+  let body;
+  page.setFetch((url, opts) => { body = JSON.parse(opts.body); return wrapped({capital:15000, risk_per_trade:0.01,
+    max_risk_per_trade:0.02, max_single_weight:0.2, first_entry_min:0.1, first_entry_max:0.15, max_stop_pct:0.08,
+    exposure_caps:{strong:0.5, range:0.5, weak:0.2}, lot_size:100, min_commission:5, updated_at:'2026-11-17T15:00:00'}); });
+  await e.get('rp-submit').onclick();
+  assert.equal(body.capital, 15000);
+  assert.equal(body.risk_per_trade, 0.01);
+  assert.deepEqual(body.exposure_caps, {strong:0.5, range:0.5, weak:0.2});
+  assert.match(e.get('rp-view').innerHTML, /已保存的个人参数/);
+  assert.match(e.get('rp-result').innerHTML, /已保存/);
+}
+
+const scenarios = {decision_fields, decision_retry, stale_date, audit_failure, failure_status, date_selection_during_refresh, refresh_waits_for_view, unconfirmed_market, health_without_samples, available_dates, dashboard_basis, refresh_new_complete_day, analysis_coverage_labels, structured_ai_results, structured_ai_empty_and_stale, readiness_index_and_demo_labels, unknown_ai_trade_permission, personal_sizing, personal_profile_save};
 const scenario = scenarios[process.argv[2]];
 if (!scenario) throw new Error('Unknown frontend scenario');
 scenario().then(() => process.stdout.write('ok\n')).catch(err => {console.error(err); process.exitCode = 1;});

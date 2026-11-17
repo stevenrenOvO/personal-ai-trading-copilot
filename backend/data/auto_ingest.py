@@ -61,11 +61,95 @@ def _backfill_day(day: str) -> dict:
     )
 
 
-def _invalidate(runtime: Any) -> None:
-    """Drop derived caches so the freshly ingested bars are picked up."""
+_snapshot_lock = threading.Lock()
+_snapshot_done: dict[tuple[str, str], Optional[str]] = {}
+
+
+def store_closing_snapshot(runtime: Any, day: str, quote_service: Any = None) -> Optional[dict]:
+    """Write ``day``'s bars from the closing snapshot once per snapshot version.
+
+    Returns the stored record, or ``None`` when there is nothing (new) to do.
+    """
+    history = getattr(getattr(runtime, "provider", None), "history", None)
+    if history is None:
+        return None
     try:
-        runtime.analysis_cache.clear()
-        runtime.context_cache.clear()
+        if quote_service is None:
+            from backend.market.quote_service import get_quote_service
+
+            quote_service = get_quote_service()
+        frame, meta = quote_service.get()
+    except Exception:  # noqa: BLE001
+        return None
+    from backend.data.snapshot_bars import is_closing_snapshot, persist_closing_snapshot
+
+    if not is_closing_snapshot(meta, day):
+        return None
+    key = (str(getattr(history, "db_path", id(history))), str(day))
+    version = getattr(meta, "as_of", None)
+    if key in _snapshot_done and _snapshot_done[key] == version:
+        return None
+    try:
+        record = persist_closing_snapshot(history, frame, meta, day)
+    except Exception:  # noqa: BLE001 - the per-stock backfill remains the fallback
+        logging.getLogger(__name__).exception("Storing closing snapshot for %s failed", day)
+        return None
+    _snapshot_done[key] = version
+    if record and record.get("inserted"):
+        _row_cache.pop(day, None)
+        _invalidate(runtime, day)
+    return record
+
+
+_SNAPSHOT_CHECK_SECONDS = 30.0
+_snapshot_checked: dict[str, float] = {}
+
+
+def _schedule_closing_snapshot(runtime: Any, day: str, quote_service: Any = None) -> None:
+    now = time.monotonic()
+    if now - _snapshot_checked.get(day, -_SNAPSHOT_CHECK_SECONDS) < _SNAPSHOT_CHECK_SECONDS:
+        return
+    if not _snapshot_lock.acquire(blocking=False):
+        return  # already being written
+    _snapshot_checked[day] = now
+
+    def work() -> None:
+        try:
+            store_closing_snapshot(runtime, day, quote_service)
+        finally:
+            _snapshot_lock.release()
+
+    try:
+        threading.Thread(target=work, name="closing-snapshot", daemon=True).start()
+    except Exception:  # noqa: BLE001
+        _snapshot_lock.release()
+
+
+def _watchlist_codes(runtime: Any) -> list[str]:
+    try:
+        from backend.personal.watchlist import WatchlistStore
+
+        return [item["ts_code"] for item in WatchlistStore(runtime.root).list()
+                if isinstance(item, dict) and item.get("ts_code")]
+    except Exception:  # noqa: BLE001 - a broken watchlist must not stop ingest
+        return []
+
+
+def _invalidate(runtime: Any, earliest: Optional[str] = None) -> None:
+    """Drop derived caches so the freshly ingested bars are picked up.
+
+    With ``earliest`` only results that can see bars from that date onward are
+    dropped. A long backfill of recent days must not keep wiping an analysis of
+    an older day the user is looking at -- that analysis can take most of a
+    minute and would otherwise never finish before the next wipe.
+    """
+    try:
+        if earliest:
+            runtime.analysis_cache.invalidate_from(earliest)
+            runtime.context_cache.invalidate_from(earliest)
+        else:
+            runtime.analysis_cache.clear()
+            runtime.context_cache.clear()
         if hasattr(runtime.provider, "clear_cache"):
             runtime.provider.clear_cache()
     except Exception:  # noqa: BLE001
@@ -89,6 +173,7 @@ def ensure_today_bars(
     backfill: Optional[Callable[[str], dict]] = None,
     run_sync: bool = False,
     max_gap_days: int = 60,
+    quote_service: Any = None,
 ) -> bool:
     """Backfill every missing recent trading day (at most once per run).
 
@@ -112,6 +197,10 @@ def ensure_today_bars(
         day = session.current_trading_day()
     except Exception:  # noqa: BLE001
         return False
+    if day and backfill is None and rows_on is None:
+        # Cheapest path to today's bars: the closing snapshot, one request
+        # for the whole market. Runs even while a long backfill is going.
+        _schedule_closing_snapshot(runtime, day, quote_service)
     if not day or _state["running"]:
         return False
 
@@ -192,6 +281,7 @@ def ensure_today_bars(
         _state["root"] = root_key
         last_invalidated = time.monotonic()
         last_written = 0
+        current_days = list(missing)
         job_started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with _state_lock:
             _state["progress"] = {"phase": "queued", "priority": mode,
@@ -207,7 +297,7 @@ def ensure_today_bars(
             written = int(payload.get("stored_rows", 0))
             if written > last_written and (now - last_invalidated >= _INCREMENTAL_INVALIDATE_SECONDS
                                            or payload.get("phase") == "completed"):
-                _invalidate(runtime)
+                _invalidate(runtime, min(current_days) if current_days else None)
                 last_invalidated = now
                 last_written = written
         def schedule_retry(target, details):
@@ -247,14 +337,19 @@ def ensure_today_bars(
                         abs((datetime.strptime(day, "%Y%m%d") - datetime.strptime(batches[-1][0], "%Y%m%d")).days) > 20):
                         batches.append([])
                     batches[-1].append(day)
+                # The user's own watchlist is tiny and drives daily decisions:
+                # repair it right after the indices, before the other ~5,000.
+                priority = list(INDEX_CODES) + [code for code in _watchlist_codes(runtime)
+                                                if code in targets and code not in INDEX_CODES]
                 for days in batches:
                     days = sorted(days)
+                    current_days = days
                     last_written = 0
                     try:
                         result = run_backfill(start_date=days[0], end_date=days[-1], source="tencent",
                             db_path=runtime.provider.history.db_path, report_every=1000,
                             codes=codes, required_dates=days, progress_callback=on_progress,
-                            priority_codes=list(INDEX_CODES))
+                            priority_codes=priority)
                         for day in days:
                             if mode == "indices":
                                 absent = sorted((stock_codes | set(INDEX_CODES)) - history.codes_with_date(day))

@@ -56,14 +56,37 @@ def test_partial_historical_market_and_board_have_no_scores(history_runtime):
 def test_completed_current_history_remains_visible_when_snapshot_is_missing(history_runtime):
     provider = history_runtime.provider
     codes = provider.stock_basic()["ts_code"].tolist()
-    provider.history.ingest(pd.DataFrame({"ts_code": codes, "trade_date": "20240104",
-        "open": 10., "high": 11., "low": 9., "close": 10.1,
-        "pre_close": 10., "pct_chg": 1., "vol": 1000., "amount": 10000.}))
+    # The prior session must be complete too (see the test below); repair it.
+    for day in ("20240103", "20240104"):
+        provider.history.ingest(pd.DataFrame({"ts_code": codes, "trade_date": day,
+            "open": 10., "high": 11., "low": 9., "close": 10.1,
+            "pre_close": 10., "pct_chg": 1., "vol": 1000., "amount": 10000.}))
     history_runtime.analysis_cache.clear()
     for endpoint in ("/market/state", "/sectors", "/board/environment"):
         status, payload = _call("GET", endpoint + "?date=20240104", history_runtime)
         assert status == 200 and payload["meta"]["status"] == "ok"
         assert payload["data"]
+
+
+def test_complete_day_after_a_partial_session_is_not_analysable(history_runtime):
+    """A closing snapshot can complete today while yesterday is still 40%:
+    today's 晋级率 / 炸板 would then be computed against a partial yesterday."""
+    provider = history_runtime.provider
+    codes = provider.stock_basic()["ts_code"].tolist()
+    provider.history.ingest(pd.DataFrame({"ts_code": codes, "trade_date": "20240104",
+        "open": 10., "high": 11., "low": 9., "close": 10.1,
+        "pre_close": 10., "pct_chg": 1., "vol": 1000., "amount": 10000.}))
+    history_runtime.analysis_cache.clear()
+    dates = {item["date"]: item for item in history_dates(history_runtime)}
+    assert dates["20240102"]["complete"]
+    today = dates["20240104"]
+    assert today["coverage_ratio"] == 1 and today["day_complete"]
+    assert not today["complete"] and today["prior_gap"] == "20240103"
+    for endpoint in ("/market/state", "/board/environment"):
+        status, payload = _call("GET", endpoint + "?date=20240104", history_runtime)
+        assert status == 200 and payload["meta"]["status"] != "ok"
+        assert payload["data"].get("score") is None
+        assert payload["data"].get("recommended_exposure") is None
 
 
 def test_previous_closing_snapshot_is_displayed_on_its_actual_date(history_runtime, monkeypatch):

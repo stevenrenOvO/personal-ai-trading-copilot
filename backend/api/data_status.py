@@ -56,10 +56,11 @@ def history_dates(runtime) -> list[dict]:
                     item = totals.setdefault(str(day), [0, 0])
                     item[0] += total
                     item[1] += valid or 0
-        return [{"date": day, "row_count": rows, "valid_rows": valid,
-                 "coverage_ratio": min(1., valid / count) if count else 0,
-                 "complete": count >= 1000 and valid >= threshold}
-                for day, (rows, valid) in sorted(totals.items())]
+        items = [{"date": day, "row_count": rows, "valid_rows": valid,
+                  "coverage_ratio": min(1., valid / count) if count else 0,
+                  "complete": count >= 1000 and valid >= threshold}
+                 for day, (rows, valid) in sorted(totals.items())]
+        return _require_prior_sessions(runtime, items)
     history = getattr(runtime.provider, "history", None)
     if history is not None:
         stat = history.db_path.stat()
@@ -69,6 +70,43 @@ def history_dates(runtime) -> list[dict]:
     # Reuse the expensive market-wide scan while the database is unchanged;
     # a committed ingest changes the revision immediately.
     return runtime.analysis_cache.get_or_compute(("date_availability", revision), compute)
+
+
+# Structural engines look back: yesterday's limit-ups (晋级率, 炸板), limit-up
+# streaks, 20/21-day averages. A day is only analysable when the sessions
+# before it are complete too, within the range the store holds.
+STRUCTURE_LOOKBACK_SESSIONS = 20
+
+
+def _require_prior_sessions(runtime, items: list[dict]) -> list[dict]:
+    """Mark a day incomplete when a recent prior session is missing or partial.
+
+    The closing snapshot can complete today while earlier days are still
+    being downloaded; without this, today's 晋级率 would be computed against a
+    partial yesterday and shown as fact.
+    """
+    if not items:
+        return items
+    try:
+        cal = runtime.provider.trade_cal(start_date=items[0]["date"], end_date=items[-1]["date"], is_open=True)
+        sessions = sorted(str(day) for day in cal["cal_date"])
+    except Exception:  # noqa: BLE001 - no calendar: keep per-day coverage only
+        return items
+    if not sessions:
+        return items
+    from bisect import bisect_left
+
+    complete = {item["date"] for item in items if item["complete"]}
+    for item in items:
+        if not item["complete"]:
+            continue
+        index = bisect_left(sessions, item["date"])
+        prior = sessions[max(0, index - STRUCTURE_LOOKBACK_SESSIONS):index]
+        gaps = [day for day in prior if day not in complete]
+        if gaps:
+            item.update(complete=False, day_complete=True, prior_gap=gaps[-1],
+                        prior_gap_count=len(gaps))
+    return items
 
 
 def date_status(runtime, date: str) -> dict:

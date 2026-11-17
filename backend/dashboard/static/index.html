@@ -62,6 +62,7 @@
   /* ---- V1.0 手机端适配：核心信息不横向滚动 ---- */
   .kv { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid var(--panel2); font-size:13px; }
   .kv:last-child { border-bottom:none; }
+  #pl-saved a { color:var(--accent); }
   .kv .k { color:var(--muted); flex:0 0 38%; }
   .kv .v { text-align:right; flex:1; word-break:break-word; }
   .card-mobile { display:block; }
@@ -147,6 +148,7 @@
     <button data-tab="opportunities">机会</button>
     <button data-tab="board">涨停环境</button>
     <button data-tab="review">复盘</button>
+    <button data-tab="account">我的账户</button>
     <span class="divider"></span>
     <button data-tab="backtest">回测</button>
     <button data-tab="ai">AI 助手</button>
@@ -224,6 +226,70 @@
       </div>
       <div class="card" style="margin-top:16px;"><h3>③ 交易记录 / 决策日志</h3><div id="review-trades"></div></div>
       <div class="card" style="margin-top:16px;"><h3>④ 交易审计</h3><div id="review-audit"></div></div>
+    </section>
+
+    <section id="account" class="section">
+      <div class="banner">我的账户：按你自己的资金和风控规则计算仓位，与 100 万研究用模拟盘相互独立。计算只给出“规则允许的上限”，不等于买入建议。</div>
+      <div class="card"><h3>我的持仓（真实账户）</h3>
+        <div id="ra-view" class="muted">加载中…</div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>观察池 · 波段规则状态（最多 10 只）</h3>
+        <div class="form-row"><label>股票代码</label><input id="wl-code" placeholder="600519.SH"><input id="wl-name" placeholder="名称（可选）" aria-label="股票名称"><button id="wl-add">加入</button></div>
+        <div id="wl-result" class="muted request-result" role="status"></div>
+        <div id="wl-view" class="muted">加载中…</div>
+        <div class="muted" style="margin-top:6px;">规则：周收盘在上升的 13 周均线之上；日线 DIF 回零轴附近、绿柱缩短、金叉放量；有效跌破 21 日线离场；盈利曾达 15% 后改为自最高收盘回撤 10% 离场。均线和 MACD 用前复权日线计算。</div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>交易前检查</h3>
+        <div class="form-row"><label>股票代码</label><input id="pc-code" placeholder="600519.SH"></div>
+        <div class="form-row"><label>买入价</label><input id="pc-entry" placeholder="留空用最新价"></div>
+        <div class="form-row"><label>止损价</label><input id="pc-stop" placeholder="留空用 21 日线下方 1%"></div>
+        <div class="form-row"><label>单笔风险</label><select id="pc-risk"><option value="">默认</option><option value="0.01">1%</option><option value="0.015">1.5%</option><option value="0.02">2%</option></select><button id="pc-submit">检查</button></div>
+        <div id="pc-result" class="muted" role="status">检查规则是否满足、可买手数和总仓位余量。只做检查，不会下单。</div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>记录真实成交</h3>
+        <div class="form-row"><label>成交日期</label><input id="rt-date" placeholder="YYYYMMDD"></div>
+        <div class="form-row"><label>股票代码</label><input id="rt-code" placeholder="600519.SH"><input id="rt-name" placeholder="名称（可选）" aria-label="成交股票名称"></div>
+        <div class="form-row"><label>方向</label><select id="rt-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select></div>
+        <div class="form-row"><label>成交价</label><input id="rt-price" placeholder="10.00"></div>
+        <div class="form-row"><label>数量（股）</label><input id="rt-shares" placeholder="100"></div>
+        <div class="form-row"><label>费用（元）</label><input id="rt-fee" placeholder="留空按费率估算"></div>
+        <div class="form-row"><label>是否按计划</label><select id="rt-followed"><option value="">未标注</option><option value="true">按计划</option><option value="false">计划外</option></select></div>
+        <div class="form-row"><label>理由</label><input id="rt-reason" placeholder="为什么做这一笔"><button id="rt-submit">记录</button></div>
+        <div id="rt-result" class="muted request-result" role="status">记录后不可修改；录错请作废并注明原因，原记录保留。</div>
+        <div class="form-row" style="margin-top:12px;"><label>按日期查</label><input id="rt-query" placeholder="YYYYMMDD，留空为全部"><button id="rt-load">查询</button></div>
+        <div id="rt-list" class="muted"></div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>收盘后计划（新候选最多 3 只）</h3>
+        <div class="form-row"><label>计划日期</label><input id="pl-date" placeholder="YYYYMMDD"><button id="pl-load">读取</button></div>
+        <div id="pl-saved" class="muted"></div>
+        <div id="pl-form"></div>
+        <div class="form-row"><label>市场判断</label><input id="pl-market" placeholder="如：弱势，只看不做"></div>
+        <div class="form-row"><label>备注</label><input id="pl-note" placeholder="可选"><button id="pl-submit">保存计划</button></div>
+        <div id="pl-result" class="muted request-result" role="status">同一天再次保存会保留之前的版本，复盘时能看到改动。</div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>仓位计算器</h3>
+        <div class="form-row"><label>买入价</label><input id="sz-entry" placeholder="10.00"></div>
+        <div class="form-row"><label>止损价</label><input id="sz-stop" placeholder="9.30"></div>
+        <div class="form-row"><label>单笔风险</label><select id="sz-risk"><option value="">默认</option><option value="0.01">1%</option><option value="0.015">1.5%</option><option value="0.02">2%</option></select></div>
+        <div class="form-row"><label>市场状态</label><select id="sz-regime"><option value="">不检查总仓位</option><option value="strong">趋势向上</option><option value="range">震荡</option><option value="weak">弱势/趋势不明</option></select></div>
+        <div class="form-row"><label>现有持仓市值</label><input id="sz-exposure" placeholder="0（元，全部持仓）"></div>
+        <div class="form-row"><label>该股已持有</label><input id="sz-existing" placeholder="0（元，加仓时填写）"></div>
+        <div class="form-row"><label>可用资金</label><input id="sz-cash" placeholder="可留空（元）"><button id="sz-submit">计算</button></div>
+        <div id="sz-result" class="muted" role="status">填写买入价和止损价后点击计算。止损价可按 21 日均线或关键支撑设置。</div>
+      </div>
+      <div class="card" style="margin-top:16px;"><h3>我的风控参数</h3>
+        <div id="rp-view"><span class="muted">加载中…</span></div>
+        <details style="margin-top:10px;"><summary>修改参数</summary>
+          <div class="form-row"><label>账户资金</label><input id="rp-capital" placeholder="12000（元）"></div>
+          <div class="form-row"><label>单笔风险%</label><input id="rp-risk" placeholder="1"></div>
+          <div class="form-row"><label>单票上限%</label><input id="rp-single" placeholder="20"></div>
+          <div class="form-row"><label>首仓上限%</label><input id="rp-first" placeholder="15"></div>
+          <div class="form-row"><label>趋势向上%</label><input id="rp-strong" placeholder="50"></div>
+          <div class="form-row"><label>震荡%</label><input id="rp-range" placeholder="50"></div>
+          <div class="form-row"><label>弱势/不明%</label><input id="rp-weak" placeholder="20"><button id="rp-submit">保存参数</button></div>
+          <div id="rp-result" class="muted request-result" role="status"></div>
+        </details>
+      </div>
     </section>
 
     <section id="backtest" class="section">
@@ -310,7 +376,15 @@
         }
       }
     }
-    const apiGet = (path, track = true) => requestJson(path, {}, 25000, track);
+    // 同一 GET 正在进行时复用同一请求：切换标签或多个面板同时要市场状态时，
+    // 不再向服务端重复发起同样的计算。首次计算全市场结构可能接近一分钟，故读取超时放宽到 90 秒。
+    const _inflightGets = new Map();
+    const apiGet = (path, track = true) => {
+      if (_inflightGets.has(path)) return _inflightGets.get(path);
+      const pending = requestJson(path, {}, 90000, track).finally(() => _inflightGets.delete(path));
+      _inflightGets.set(path, pending);
+      return pending;
+    };
     const apiPost = (path, body, timeout) => requestJson(path,
       {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}, timeout);
 
@@ -497,6 +571,7 @@
       else if (tab === 'opportunities') return loadOpps(d);
       else if (tab === 'board') return loadBoard(d);
       else if (tab === 'review') return loadReview();
+      else if (tab === 'account') return loadAccount();
       else if (tab === 'backtest') return loadBacktestRuns();
       else if (tab === 'ai') return loadBriefing(d);
       else if (tab === 'health') return loadHealth();
@@ -1251,6 +1326,287 @@
     window.addEventListener('online', () => { loadSystemStatus(); });
     window.addEventListener('offline', () => { $('net-status').textContent = '网络已断开；本地服务和已缓存数据仍可尝试访问'; $('net-status').className = 'warn'; });
     setInterval(() => { if (!document.hidden) loadSystemStatus(); }, 30000);
+
+    // ---- V1.2 我的账户：风控参数与仓位计算 ----
+    const yuan = (x) => (x==null || x==='') ? '—' : Number(x).toLocaleString('zh-CN', {maximumFractionDigits:2}) + ' 元';
+    const REGIME_ZH = {strong:'趋势向上', range:'震荡', weak:'弱势/趋势不明'};
+    function renderRiskProfile(p, source) {
+      const caps = p.exposure_caps || {};
+      const rows = [
+        ['账户资金', yuan(p.capital)],
+        ['单笔风险', `${pct(p.risk_per_trade,1)}（最高 ${pct(p.max_risk_per_trade,1)}）`],
+        ['单票上限', pct(p.max_single_weight,0)],
+        ['首仓', `${pct(p.first_entry_min,0)}–${pct(p.first_entry_max,0)}`],
+        ['参考止损上限', pct(p.max_stop_pct,0)],
+        ['总仓位上限', Object.keys(REGIME_ZH).map(k => `${REGIME_ZH[k]} ${pct(caps[k],0)}`).join(' · ')],
+        ['交易单位 / 最低佣金', `${p.lot_size} 股 / ${yuan(p.min_commission)}`],
+      ];
+      return rows.map(([k, v]) => `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('')
+        + `<div class="muted" style="margin-top:6px;">${source === 'saved' ? '已保存的个人参数' + (p.updated_at ? '（' + esc(p.updated_at.replace('T', ' ')) + '）' : '') : '当前为默认参数，尚未保存'}</div>`;
+    }
+    async function loadAccount() {
+      loadDailyLoop();
+      const r = await requestJson('/personal/risk-profile');
+      if (!r.ok) { $('rp-view').innerHTML = errorBox(r.error); return; }
+      $('rp-view').innerHTML = renderRiskProfile(r.data, r.meta && r.meta.source);
+      const p = r.data, caps = p.exposure_caps || {};
+      const fill = {'rp-capital':p.capital, 'rp-risk':p.risk_per_trade*100, 'rp-single':p.max_single_weight*100,
+        'rp-first':p.first_entry_max*100, 'rp-strong':caps.strong*100, 'rp-range':caps.range*100, 'rp-weak':caps.weak*100};
+      for (const [id, v] of Object.entries(fill)) if (!$(id).value) $(id).value = String(Math.round(v * 100) / 100);
+    }
+
+    // ---- V1.2 日常闭环：持仓 / 观察池状态 / 交易前检查 / 真实成交 / 收盘后计划 ----
+    const todayKey = () => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; };
+    const dayText = (d) => d ? `${String(d).slice(0,4)}-${String(d).slice(4,6)}-${String(d).slice(6,8)}` : '—';
+    const fixed = (x, d = 2) => (x == null || x === '') ? '—' : Number(x).toFixed(d);
+    const ENTRY_CLASS = {'买点：金叉放量':'ok', '等待金叉':'warn', '金叉未放量':'warn', '周线符合，等待日线信号':'muted', '跌破21日线':'danger', '周线不符合':'danger', '数据不足':'muted'};
+    let lastAccount = null;
+
+    function warningsOf(basis) {
+      const w = (basis && basis.warnings) || [];
+      return w.length ? w.map(x => `<div class="warn">· ${esc(x)}</div>`).join('') : '';
+    }
+    function basisLine(basis) {
+      if (!basis) return '';
+      const src = basis.adjusted ? `前复权（${esc(basis.source)}，${esc((basis.fetched_at || '').slice(0, 16).replace('T', ' '))} 获取）` : '未复权本地日线';
+      const appended = (basis.appended_raw_dates || []).length ? `；${basis.appended_raw_dates.map(dayText).join('、')} 用本地收盘补上` : '';
+      return `<div class="muted">数据：${src}，最新 ${dayText(basis.last_date)}${appended}</div>`;
+    }
+    function conditionsList(s) {
+      const rows = (s.conditions || []).map(c => {
+        const mark = c.passed === true ? '<span class="ok">✓</span>' : c.passed === false ? '<span class="danger">✗</span>' : '<span class="muted">?</span>';
+        return `<div class="kv"><span class="k">${mark} ${esc(c.label)}</span><span class="v">${esc(c.detail)}</span></div>`;
+      }).join('');
+      return rows + (s.reason ? `<div class="muted">${esc(s.reason)}</div>` : '') + basisLine(s.basis) + warningsOf(s.basis);
+    }
+
+    async function loadRealAccount() {
+      const r = await apiGet('/personal/account');
+      if (!r.ok) { $('ra-view').innerHTML = errorBox(r.error); return; }
+      const a = lastAccount = r.data;
+      const head = `<div class="flex">${[
+        metric('账户资金', yuan(a.capital)), metric('可用资金', yuan(a.cash)),
+        metric('持仓市值', yuan(a.exposure)), metric('总仓位', pct(a.exposure_pct, 1)),
+        metric('已实现盈亏', yuan(a.realized_pnl)),
+      ].join('')}</div>`;
+      const unpriced = (a.unpriced || []).length ? `<div class="warn">· ${esc(a.unpriced.join('、'))} 没有最新价，总仓位可能低估</div>` : '';
+      if (!(a.positions || []).length) {
+        $('ra-view').innerHTML = head + `<div class="muted" style="margin-top:8px;">当前没有持仓。成交请在下方「记录真实成交」登记。</div>`;
+        renderPlanForm();
+        return;
+      }
+      const rows = a.positions.map(p => {
+        const ex = p.exit || {};
+        const cls = String(ex.verdict || '').startsWith('离场') ? 'danger' : ex.verdict === '持有' ? 'ok' : 'muted';
+        return `<div class="row" style="flex-wrap:wrap;">`
+          + `<span><b>${esc(p.name || '')} ${esc(p.ts_code)}</b><div class="muted">${dayText(p.entry_date)} 起 · ${p.shares} 股 · 成本 ${fixed(p.avg_cost, 3)}</div></span>`
+          + `<span>现价 ${fixed(p.price)} · 市值 ${yuan(p.market_value)}（${pct(p.weight, 1) || '—'}）<div>浮动盈亏 ${yuan(p.unrealized_pnl)}</div><div class="muted">${esc(p.price_source || '')}</div></span>`
+          + `<span><span class="${cls}">${esc(ex.verdict || '—')}</span>${ex.stop ? ` · 离场线 ${fixed(ex.stop)}` : ''}<div class="muted">${esc(ex.rule || '')}</div>`
+          + `${ex.note ? `<div class="warn">${esc(ex.note)}</div>` : ''}${warningsOf(p.status_basis)}</span></div>`;
+      }).join('');
+      $('ra-view').innerHTML = head + unpriced + `<div style="margin-top:10px;">${rows}</div>`;
+      renderPlanForm();
+    }
+
+    async function loadWatchlist() {
+      $('wl-view').innerHTML = '<span class="muted">正在按规则计算（首次需获取复权日线）…</span>';
+      const r = await apiGet('/personal/watchlist/status');
+      if (!r.ok) { $('wl-view').innerHTML = errorBox(r.error); return; }
+      const items = r.data.items || [];
+      if (!items.length) { $('wl-view').innerHTML = '<div class="muted">观察池为空。加入股票后，这里逐只显示规则状态和依据。</div>'; return; }
+      const rows = items.map(s => {
+        const w = s.weekly || {}, m = s.macd || {}, ma = s.ma || {};
+        const facts = [
+          w.week_close != null ? `周收盘 ${fixed(w.week_close)} / 13周线 ${fixed(w.ma)} ${w.rising ? '↑' : '↓'}` : '周线数据不足',
+          m.dif != null ? `DIF ${fixed(m.dif, 3)}${m.cross ? `，${dayText(m.cross.date)} 金叉 量比 ${fixed(m.cross.volume_ratio)}` : ''}` : '',
+          ma.ma21 != null ? `21日线 ${fixed(ma.ma21)}（偏离 ${pct(ma.distance_pct, 1)}）· 建议止损 ${fixed(ma.suggested_stop)}` : '',
+        ].filter(Boolean).map(x => `<div class="muted">${x}</div>`).join('');
+        return `<div class="row" style="flex-wrap:wrap;">`
+          + `<span><b>${esc(s.name || '')} ${esc(s.ts_code)}</b>${s.held ? ' <span class="pill">持有</span>' : ''}`
+          + `<div><span class="${ENTRY_CLASS[s.entry] || ''}">${esc(s.entry)}</span> <span class="muted">按 ${dayText((s.basis || {}).last_date || s.as_of)}</span></div>${facts}</span>`
+          + `<span><button data-check="${esc(s.ts_code)}">检查</button> <button data-remove="${esc(s.ts_code)}">移除</button></span>`
+          + `<details style="flex-basis:100%;"><summary class="muted">依据</summary>${conditionsList(s)}</details></div>`;
+      }).join('');
+      $('wl-view').innerHTML = `<div class="muted">评估日 ${dayText(r.data.evaluation_day)}</div>${rows}`;
+      $('wl-view').querySelectorAll('[data-check]').forEach(b => b.onclick = () => { $('pc-code').value = b.dataset.check; $('pc-submit').click(); $('pc-code').scrollIntoView({block:'center'}); });
+      $('wl-view').querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+        const res = await apiPost('/personal/watchlist/remove', {ts_code: b.dataset.remove});
+        $('wl-result').innerHTML = res.ok ? `<span class="ok">已移除 ${esc(b.dataset.remove)}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+        loadWatchlist();
+      });
+    }
+    $('wl-add').onclick = async () => {
+      const res = await apiPost('/personal/watchlist', {ts_code: $('wl-code').value.trim(), name: $('wl-name').value.trim()});
+      $('wl-result').innerHTML = res.ok ? `<span class="ok">已加入 ${esc(res.data.ts_code)}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+      if (res.ok) { $('wl-code').value = ''; $('wl-name').value = ''; loadWatchlist(); }
+    };
+
+    $('pc-submit').onclick = async () => {
+      const params = new URLSearchParams({ts_code: $('pc-code').value.trim()});
+      if ($('pc-entry').value.trim()) params.set('entry', $('pc-entry').value.trim());
+      if ($('pc-stop').value.trim()) params.set('stop', $('pc-stop').value.trim());
+      if ($('pc-risk').value) params.set('risk_pct', $('pc-risk').value);
+      $('pc-result').innerHTML = '<span class="muted">检查中…</span>';
+      const r = await apiGet('/personal/pretrade?' + params.toString());
+      if (!r.ok) { $('pc-result').innerHTML = `<span class="danger">${esc(r.error)}</span>`; return; }
+      const x = r.data, cls = {'通过':'ok', '有警告':'warn', '不通过':'danger'}[x.verdict];
+      const mark = {pass:'<span class="ok">✓</span>', warn:'<span class="warn">!</span>', fail:'<span class="danger">✗</span>'};
+      const rows = x.checks.map(c => `<div class="kv"><span class="k">${mark[c.level]} ${esc(c.label)}</span><span class="v">${esc(c.detail)}</span></div>`).join('');
+      const market = x.market && x.market.state ? `市场状态 ${esc(x.market.state)}（${esc(x.market.source)} ${dayText(x.market.date)}）` : '市场状态未知';
+      $('pc-result').innerHTML = `<div class="big ${cls}">${esc(x.verdict)}</div>`
+        + `<div class="muted">买入价 ${fixed(x.inputs.entry_price)}，止损价 ${fixed(x.inputs.stop_price)}（${esc(x.inputs.stop_source)}）；${market}</div>`
+        + rows + `<details><summary class="muted">规则依据</summary>${conditionsList(x.status)}</details>`
+        + `<div class="muted" style="margin-top:6px;">${esc(x.note)}</div>`;
+    };
+
+    function renderTrades(trades) {
+      if (!trades.length) return '<div class="muted">没有记录。</div>';
+      return trades.map(t => `<div class="row" style="flex-wrap:wrap;${t.voided ? 'opacity:.55;' : ''}">`
+        + `<span><b>${dayText(t.trade_date)} ${t.side === 'BUY' ? '买入' : '卖出'} ${esc(t.name || '')} ${esc(t.ts_code)}</b>`
+        + `<div class="muted">${esc(t.id)} · ${t.followed_plan === true ? '按计划' : t.followed_plan === false ? '<span class="warn">计划外</span>' : '未标注计划'}${t.reason ? ' · ' + esc(t.reason) : ''}</div></span>`
+        + `<span>${fixed(t.price, 3)} × ${t.shares} = ${yuan(t.amount)}<div class="muted">费用 ${fixed(t.fee)}${t.fee_source === 'estimated' ? '（估算）' : ''}</div></span>`
+        + `<span>${t.voided ? `<span class="danger">已作废</span><div class="muted">${esc(t.void_reason)}</div>` : `<button data-void="${esc(t.id)}">作废</button>`}</span></div>`).join('');
+    }
+    async function loadTrades() {
+      const d = $('rt-query').value.trim();
+      const r = await apiGet('/personal/trades' + (d ? '?date=' + encodeURIComponent(d) : ''));
+      if (!r.ok) { $('rt-list').innerHTML = `<span class="danger">${esc(r.error)}</span>`; return; }
+      $('rt-list').innerHTML = renderTrades(r.data.trades || []);
+      $('rt-list').querySelectorAll('[data-void]').forEach(b => b.onclick = async () => {
+        const reason = window.prompt(`作废 ${b.dataset.void}：请填写原因（原记录会保留）`);
+        if (!reason) return;
+        const res = await apiPost('/personal/trades/void', {id: b.dataset.void, reason});
+        $('rt-result').innerHTML = res.ok ? `<span class="ok">已作废 ${esc(b.dataset.void)}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+        loadTrades(); loadRealAccount();
+      });
+    }
+    $('rt-load').onclick = loadTrades;
+    $('rt-submit').onclick = async () => {
+      const body = {trade_date: $('rt-date').value.trim(), ts_code: $('rt-code').value.trim(), name: $('rt-name').value.trim(),
+        side: $('rt-side').value, price: Number($('rt-price').value), shares: Number($('rt-shares').value), reason: $('rt-reason').value.trim()};
+      if ($('rt-fee').value.trim()) body.fee = Number($('rt-fee').value);
+      if ($('rt-followed').value) body.followed_plan = $('rt-followed').value === 'true';
+      const res = await apiPost('/personal/trades', body);
+      if (!res.ok) { $('rt-result').innerHTML = `<span class="danger">${esc(res.error)}</span>`; return; }
+      $('rt-result').innerHTML = `<span class="ok">已记录 ${esc(res.data.id)}：${res.data.side === 'BUY' ? '买入' : '卖出'} ${esc(res.data.ts_code)} ${res.data.shares} 股，费用 ${fixed(res.data.fee)} 元${res.data.fee_source === 'estimated' ? '（估算）' : ''}</span>`;
+      ['rt-price','rt-shares','rt-fee','rt-reason'].forEach(id => { $(id).value = ''; });
+      loadTrades(); loadRealAccount();
+    };
+
+    let lastPlan = null;
+    function renderPlanForm(plan = lastPlan) {
+      const c = (plan && plan.candidates) || [];
+      const rows = [0, 1, 2].map(i => {
+        const x = c[i] || {};
+        return `<div class="form-row"><label>候选 ${i + 1}</label>`
+          + `<input id="pl-c${i}-code" placeholder="代码" aria-label="候选${i + 1}代码" value="${esc(x.ts_code || '')}">`
+          + `<input id="pl-c${i}-entry" placeholder="买入价" aria-label="候选${i + 1}买入价" value="${esc(x.entry_price ?? '')}">`
+          + `<input id="pl-c${i}-stop" placeholder="止损价" aria-label="候选${i + 1}止损价" value="${esc(x.stop_price ?? '')}">`
+          + `<input id="pl-c${i}-shares" placeholder="股数" aria-label="候选${i + 1}股数" value="${esc(x.shares ?? '')}">`
+          + `<input id="pl-c${i}-cond" placeholder="买入条件 / 理由" aria-label="候选${i + 1}条件" value="${esc(x.entry_condition || x.reason || '')}"></div>`;
+      }).join('');
+      const savedHold = Object.fromEntries(((plan && plan.holdings) || []).map(h => [h.ts_code, h]));
+      const holdings = ((lastAccount && lastAccount.positions) || []).map((p, i) => {
+        const h = savedHold[p.ts_code] || {};
+        const opts = ['持有', '减仓', '离场', '加仓'].map(a => `<option${(h.action || '持有') === a ? ' selected' : ''}>${a}</option>`).join('');
+        return `<div class="form-row"><label>${esc(p.ts_code)}</label><select id="pl-h${i}" data-code="${esc(p.ts_code)}" aria-label="${esc(p.ts_code)} 计划动作">${opts}</select>`
+          + `<input id="pl-h${i}-note" placeholder="说明" aria-label="${esc(p.ts_code)} 说明" value="${esc(h.note || '')}"></div>`;
+      }).join('');
+      $('pl-form').innerHTML = rows + (holdings ? `<div class="muted" style="margin-top:6px;">持仓计划</div>${holdings}` : '');
+      if (plan) { $('pl-market').value = plan.market_note || ''; $('pl-note').value = plan.note || ''; }
+    }
+    async function loadPlan() {
+      const d = $('pl-date').value.trim();
+      const r = await apiGet('/personal/plan' + (d ? '?date=' + encodeURIComponent(d) : ''));
+      if (!r.ok) { $('pl-saved').innerHTML = `<span class="danger">${esc(r.error)}</span>`; return; }
+      const dates = (r.meta && r.meta.dates) || [];
+      const list = dates.length ? `已保存的计划：${dates.slice(0, 10).map(x => `<a href="#" data-plan="${x}">${dayText(x)}</a>`).join('、')}` : '还没有保存过计划。';
+      const p = r.data;
+      const info = p ? `<div>${dayText(p.date)} 第 ${p.revision} 版，保存于 ${esc((p.updated_at || '').replace('T', ' '))}${p.revision > 1 ? `（之前改过 ${p.revision - 1} 次）` : ''}</div>` : (d ? `<div>${dayText(d)} 没有计划。</div>` : '');
+      $('pl-saved').innerHTML = info + `<div>${list}</div>`;
+      $('pl-saved').querySelectorAll('[data-plan]').forEach(a => a.onclick = (ev) => { ev.preventDefault(); $('pl-date').value = a.dataset.plan; loadPlan(); });
+      lastPlan = p;
+      renderPlanForm(p);
+    }
+    $('pl-load').onclick = loadPlan;
+    $('pl-submit').onclick = async () => {
+      const candidates = [0, 1, 2].map(i => {
+        const code = $(`pl-c${i}-code`).value.trim();
+        if (!code) return null;
+        const item = {ts_code: code, entry_condition: $(`pl-c${i}-cond`).value.trim()};
+        for (const [k, id] of [['entry_price', 'entry'], ['stop_price', 'stop'], ['shares', 'shares']]) {
+          const v = $(`pl-c${i}-${id}`).value.trim();
+          if (v) item[k] = Number(v);
+        }
+        return item;
+      }).filter(Boolean);
+      const holdings = Array.from($('pl-form').querySelectorAll('select[data-code]')).map(sel =>
+        ({ts_code: sel.dataset.code, action: sel.value, note: ($(sel.id + '-note') || {}).value || ''}));
+      const res = await apiPost('/personal/plan', {date: $('pl-date').value.trim(), candidates, holdings,
+        market_note: $('pl-market').value.trim(), note: $('pl-note').value.trim()});
+      $('pl-result').innerHTML = res.ok ? `<span class="ok">已保存 ${dayText(res.data.date)} 计划（第 ${res.data.revision} 版）</span>` : `<span class="danger">${esc(res.error)}</span>`;
+      if (res.ok) loadPlan();
+    };
+
+    function loadDailyLoop() {
+      if (!$('rt-date').value) $('rt-date').value = todayKey();
+      if (!$('pl-date').value) $('pl-date').value = currentSessionDay || todayKey();
+      loadRealAccount();
+      loadWatchlist();
+      loadTrades();
+      loadPlan();
+    }
+    function renderSizing(x) {
+      const one = x.one_lot || {};
+      const warn = (x.warnings || []).map(w => `<div class="warn">· ${esc(w)}</div>`).join('');
+      const oneLot = `<div class="muted" style="margin-top:6px;">一手（${one.shares} 股）= ${yuan(one.value)}，占资金 ${pct(one.weight,1)}；止损亏损约 ${yuan(one.risk_amount)}（${pct(one.risk_pct_of_capital,2)}，含佣金和印花税）</div>`;
+      if (x.verdict !== '可买') {
+        const why = (x.blocked_by || []).map(b => `<div class="kv"><span class="k">${esc(b.label)}</span><span class="v">上限 ${yuan(b.limit)}，一手需 ${yuan(b.actual)}</span></div>`).join('');
+        return `<div class="big danger">不可买</div><div>${esc(x.reason || '')}</div>${why}${oneLot}`
+          + `<div class="muted">止损距离 ${pct(x.stop_pct,1)}；一手需要承担 ${pct(x.one_lot_needs_risk_pct,2)} 的资金风险。</div>${warn}`;
+      }
+      const metrics = [
+        metric('可买', `${x.lots} 手（${x.shares} 股）`, 'ok'),
+        metric('买入金额', yuan(x.value)), metric('仓位占资金', pct(x.weight,1)),
+        metric('止损亏损（含费用）', yuan(x.risk_amount)), metric('亏损占资金', pct(x.risk_pct_of_capital,2)),
+        metric('止损距离', pct(x.stop_pct,1)),
+      ].join('');
+      const limited = (x.limited_by || []).length ? `<div class="muted" style="margin-top:6px;">再多一手会超过：${esc(x.limited_by.join('、'))}</div>` : '';
+      return `<div class="big ok">规则允许：${x.lots} 手</div><div class="flex" style="margin-top:8px;">${metrics}</div>${limited}${oneLot}${warn}`;
+    }
+    $('sz-submit').onclick = async () => {
+      const params = {};
+      const map = {entry:'sz-entry', stop:'sz-stop', risk_pct:'sz-risk', market_state:'sz-regime', exposure:'sz-exposure', existing:'sz-existing', cash:'sz-cash'};
+      for (const [key, id] of Object.entries(map)) { const v = String($(id).value || '').trim(); if (v) params[key] = v; }
+      if (!params.entry || !params.stop) { $('sz-result').innerHTML = '<span class="warn">请填写买入价和止损价</span>'; return; }
+      const query = Object.entries(params).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+      $('sz-submit').disabled = true;
+      try {
+        const r = await apiGet('/personal/sizing?' + query);
+        $('sz-result').innerHTML = r.ok ? renderSizing(r.data) : `<span class="danger">${esc(r.error)}</span>`;
+      } finally { $('sz-submit').disabled = false; }
+    };
+    $('rp-submit').onclick = async () => {
+      const body = {}, caps = {};
+      const val = (id) => { const v = String($(id).value || '').trim(); return v === '' ? null : Number(v); };
+      const ratio = (id) => { const v = val(id); return v === null ? null : v / 100; };
+      if (val('rp-capital') !== null) body.capital = val('rp-capital');
+      if (ratio('rp-risk') !== null) body.risk_per_trade = ratio('rp-risk');
+      if (ratio('rp-single') !== null) body.max_single_weight = ratio('rp-single');
+      if (ratio('rp-first') !== null) body.first_entry_max = ratio('rp-first');
+      for (const k of ['strong', 'range', 'weak']) if (ratio('rp-' + k) !== null) caps[k] = ratio('rp-' + k);
+      if (Object.keys(caps).length) body.exposure_caps = caps;
+      if (Object.values(body).some(v => typeof v === 'number' && !Number.isFinite(v))) { $('rp-result').innerHTML = '<span class="danger">请输入数字</span>'; return; }
+      $('rp-submit').disabled = true;
+      try {
+        const r = await apiPost('/personal/risk-profile', body);
+        if (r.ok) { $('rp-view').innerHTML = renderRiskProfile(r.data, 'saved'); $('rp-result').innerHTML = '<span class="ok">已保存</span>'; }
+        else $('rp-result').innerHTML = `<span class="danger">${esc(r.error)}</span>`;
+      } finally { $('rp-submit').disabled = false; }
+    };
+    ['sz-entry','sz-stop','sz-exposure','sz-existing','sz-cash','rp-capital','rp-risk','rp-single','rp-first','rp-strong','rp-range','rp-weak',
+     'pc-entry','pc-stop','rt-price','rt-fee'].forEach(id => { $(id).inputMode = 'decimal'; });
+    ['rt-date','rt-shares','rt-query','pl-date'].forEach(id => { $(id).inputMode = 'numeric'; });
 
     (async function init() {
       loadSystemStatus();

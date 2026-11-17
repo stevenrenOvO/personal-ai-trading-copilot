@@ -32,8 +32,12 @@ class TTLCache:
         self.maxsize = int(maxsize)
         self._entries: dict[Any, tuple[float, Any]] = {}
         self._lock = threading.Lock()
-        self._flights: dict[Any, Future] = {}
+        self._flights: dict[Any, tuple[Future, int]] = {}
         self._generation = 0
+        # Partial invalidations: (epoch, earliest affected date). A computation
+        # that started before one of these may not publish an affected key.
+        self._epoch = 0
+        self._partial: list[tuple[int, str]] = []
 
     def get(self, key: Any) -> Optional[Any]:
         with self._lock:
@@ -60,12 +64,17 @@ class TTLCache:
             return cached
         with self._lock:
             generation = self._generation
+            started_epoch = self._epoch
             flight_key = (generation, key)
-            future = self._flights.get(flight_key)
-            owner = future is None
+            flight = self._flights.get(flight_key)
+            # Join a running computation unless its inputs changed after it
+            # started; then this request starts a fresh one that replaces it.
+            owner = flight is None or self._invalidated_since(key, flight[1])
             if owner:
                 future = Future()
-                self._flights[flight_key] = future
+                self._flights[flight_key] = (future, started_epoch)
+            else:
+                future = flight[0]
         if not owner:
             return future.result()
         try:
@@ -75,7 +84,7 @@ class TTLCache:
             if value is None:
                 value = factory()
             with self._lock:
-                if generation == self._generation:
+                if generation == self._generation and not self._invalidated_since(key, started_epoch):
                     self._entries[key] = (time.monotonic(), value)
                     while len(self._entries) > self.maxsize:
                         oldest = min(self._entries, key=lambda k: self._entries[k][0])
@@ -87,9 +96,49 @@ class TTLCache:
             raise
         finally:
             with self._lock:
-                self._flights.pop(flight_key, None)
+                current = self._flights.get(flight_key)
+                if current is not None and current[0] is future:
+                    self._flights.pop(flight_key, None)
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
             self._generation += 1
+
+    def invalidate_from(self, earliest_date: str) -> None:
+        """Drop values that may depend on bars dated ``earliest_date`` or later.
+
+        A backfill that writes 2026-11-04 cannot change the analysis of
+        2026-10-28, so that result stays cached. Keys without a trade date
+        (coverage, date lists) are always dropped.
+        """
+        earliest = str(earliest_date)
+        with self._lock:
+            self._epoch += 1
+            self._partial.append((self._epoch, earliest))
+            del self._partial[:-_PARTIAL_HISTORY]
+            for key in list(self._entries):
+                if _depends_on(key, earliest):
+                    del self._entries[key]
+
+    def _invalidated_since(self, key: Any, started_epoch: int) -> bool:
+        if started_epoch == self._epoch:
+            return False
+        if self._partial and self._partial[0][0] > started_epoch + 1:
+            return True  # history trimmed: be conservative
+        return any(epoch > started_epoch and _depends_on(key, earliest)
+                   for epoch, earliest in self._partial)
+
+
+_PARTIAL_HISTORY = 256
+
+
+def _key_dates(key: Any) -> list[str]:
+    items = key if isinstance(key, tuple) else (key,)
+    return [item for item in items
+            if isinstance(item, str) and len(item) == 8 and item.isdigit()]
+
+
+def _depends_on(key: Any, earliest: str) -> bool:
+    dates = _key_dates(key)
+    return not dates or max(dates) >= earliest

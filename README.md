@@ -1,6 +1,8 @@
 # personal-ai-trading-copilot
 
-Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.1，统一发布版本 `1.1`，Windows 本地运行）。
+Personal AI Trading Copilot — 个人 A 股交易决策与审计系统（V1.2，统一发布版本 `1.2`，Windows 本地运行）。
+
+V1.2 把系统转向“个人波段交易体系的执行与审计”，在「我的账户」页形成每天可用的闭环：观察池（≤10只）→ 按个人波段规则逐只给出状态与依据 → 交易前检查（规则、可买手数、总仓位余量）→ 记录真实成交与持仓（与100万研究用模拟盘分开）→ 收盘后计划（新候选≤3只）。风控参数存于本地文件，可在页面修改；仓位按止损距离、整手和最低佣金计算。均线与MACD使用观察池股票的前复权日线。收盘后用全市场行情快照一次写入当日日线，不再逐只下载。详见 `docs/V1.2-发布说明.md` 与 `docs/V1.2-验收清单.md`。
 
 V1.1 聚焦交易与数据一致性：批次 T+1、账户原子保存与跨进程保护、成交/决策记录幂等、统一账户估值/AI、补数退避恢复、回测成交与统计修正。新增运行状态和窄屏体验，修正后的引擎已离线重算真实行情样本，详见 `docs/V1.1-release-notes.md` 和 `docs/V1.1-research-report.md`。
 
@@ -64,6 +66,9 @@ http://127.0.0.1:8000/
 - `/ai/copilot` `/board/ladder` `/data/latest` `/data/history/dates`
 - `/opportunities/candidates` `/opportunities/setups` `/opportunities/plan`
 - `/data/ingest/status`
+- V1.2 我的账户：`/personal/risk-profile`（GET/POST） `/personal/sizing` `/personal/watchlist`（GET/POST）
+  `/personal/watchlist/remove`（POST） `/personal/watchlist/status` `/personal/pretrade`
+  `/personal/account` `/personal/trades`（GET/POST） `/personal/trades/void`（POST） `/personal/plan`（GET/POST）
 
 > 早期骨架的 `/api/*` fixture 路由（`/api/backtest`、`/api/paper/snapshot`、`/api/profile`、
 > `/api/opportunity/scan`）已在 V1.0 收尾时下线，现返回 404；它们曾以 `tests/fixtures` 的
@@ -103,7 +108,7 @@ http://127.0.0.1:8000/
 .\.venv\Scripts\python.exe scripts/build_release.py --smoke
 ```
 
-输出源码 ZIP、SHA256和逐文件清单，详见 `docs/V1.1-发布流程.md`。构建不会推送Git或上传Release。本项目发布目标是个人本地工具；公网服务的身份验证、账户隔离和生产部署属于后续独立工作。
+输出源码 ZIP、SHA256和逐文件清单，流程沿用 `docs/V1.1-发布流程.md`（版本号以 `VERSION` 为准）。构建不会推送Git或上传Release。本项目发布目标是个人本地工具；公网服务的身份验证、账户隔离和生产部署属于后续独立工作。
 
 模拟交易必须填写正价格与正整数数量。API 使用当前交易日并检查标的和涨跌停约束；当前日的验证数据缺失时会明确拒绝，历史重放请使用独立账户。账户仍使用兼容的 `data/paper/state.json`，新格式增加批次、幂等请求和可恢复成交事件，不能将新格式回写给旧服务。
 

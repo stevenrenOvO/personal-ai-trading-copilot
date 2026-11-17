@@ -50,6 +50,13 @@ class MarketHistory:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
+            # WAL lets the dashboard keep reading while a backfill writes; the
+            # default rollback journal blocks readers at every commit. The
+            # setting is stored in the database file, so this runs once.
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.DatabaseError:
+                pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily (
@@ -87,6 +94,32 @@ class MarketHistory:
                 rows,
             )
         return len(rows)
+
+    def insert_missing(self, df: pd.DataFrame) -> int:
+        """Insert rows whose (ts_code, trade_date) is not stored yet.
+
+        Existing bars -- e.g. from a per-stock k-line download -- are never
+        overwritten. Returns the number of rows actually inserted.
+        """
+        if df is None or df.empty:
+            return 0
+        frame = df.copy()
+        for column in _DAILY_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = None
+        frame = frame[_DAILY_COLUMNS].astype(object).where(frame[_DAILY_COLUMNS].notna(), None)
+        rows = [tuple(row) for row in frame.itertuples(index=False, name=None)]
+        with self._connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO daily
+                (ts_code, trade_date, open, high, low, close, pre_close, change, pct_chg, vol, amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            return conn.total_changes - before
 
     # -- read ----------------------------------------------------------
     def codes_with_data(self, min_rows: int = 1) -> set[str]:

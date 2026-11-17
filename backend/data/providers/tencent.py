@@ -120,6 +120,34 @@ def fetch_daily(
     return frame
 
 
+_QFQ_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def fetch_qfq_daily(ts_code: str, *, count: int = 400, timeout: float = 15.0) -> pd.DataFrame:
+    """Forward-adjusted (前复权) daily bars for one stock, most recent ``count``.
+
+    Forward adjustment anchors on the latest price, so every earlier bar is
+    rescaled after each dividend or bonus issue: the whole series must be
+    refetched after a corporate action, never appended to.
+    Columns: trade_date, open, high, low, close, vol (shares).
+    """
+    code = _code(ts_code)
+    resp = requests.get(_QFQ_URL, params={"param": f"{code},day,,,{int(count)},qfq"}, timeout=timeout)
+    node = ((resp.json() or {}).get("data") or {}).get(code) or {}
+    rows = node.get("qfqday") or node.get("day") or []
+    records = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        open_, close, high, low, volume = (_to_float(row[i]) for i in (1, 2, 3, 4, 5))
+        if None in (open_, close, high, low) or min(open_, close, high, low) <= 0:
+            continue
+        records.append({"trade_date": str(row[0]).replace("-", ""), "open": open_, "high": high,
+                        "low": low, "close": close,
+                        "vol": volume * 100.0 if volume is not None else None})
+    return pd.DataFrame(records, columns=["trade_date", "open", "high", "low", "close", "vol"])
+
+
 def _to_float(value: object) -> Optional[float]:
     try:
         return float(value)
