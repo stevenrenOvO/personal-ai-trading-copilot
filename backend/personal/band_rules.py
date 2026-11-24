@@ -222,6 +222,8 @@ def _exit(frame: pd.DataFrame, close: pd.Series, ma_info: dict, position: dict, 
     since = dates >= entry_date
     window_note = None
     if not since.any():
+        if entry_date and entry_date > dates.iloc[-1]:
+            return _fresh_exit(close, ma_info, entry_price, p)
         return {"verdict": NO_DATA, "reason": f"复权日线未覆盖买入日 {entry_date}"}
     if entry_date < dates.iloc[0]:
         # Bought before the adjusted series starts: judge from what we have.
@@ -254,3 +256,21 @@ def _exit(frame: pd.DataFrame, close: pd.Series, ma_info: dict, position: dict, 
             "profit_pct": _r(profit, 4), "max_profit_pct": _r(max_profit, 4),
             "highest_close": _r(high, 3), "trailing_mode": trailing, "stop": _r(stop, 2),
             "trailing_stop": _r(trail_stop, 2), "note": "；".join(n for n in (note, window_note) if n) or None}
+
+
+def _fresh_exit(close: pd.Series, ma_info: dict, cost: float, p: BandParams) -> dict:
+    """Bought after the last close (e.g. today): no close since entry yet.
+
+    The stop line is already known from the last close (MA21 minus the
+    buffer); the 15% trailing rule can only start once a close follows the buy.
+    """
+    last = float(close.iloc[-1])
+    stop = ma_info["suggested_stop"]
+    note = None
+    if ma_info.get("effective_break"):
+        note = "买入前最近一个收盘已有效跌破 21 日线，按你的规则这笔不该买；若收盘仍在线下就该卖"
+    return {"verdict": "持有", "fresh": True,
+            "rule": "刚买入：止损线按 21 日线计算，下一个收盘后按新数据更新",
+            "cost_adjusted": _r(cost, 3), "close": _r(last, 3), "profit_pct": _r(last / cost - 1, 4),
+            "max_profit_pct": 0.0, "highest_close": None, "trailing_mode": False, "stop": stop,
+            "trailing_stop": None, "note": note}

@@ -625,3 +625,52 @@ def test_exit_note_when_bought_before_adjusted_series():
                   position={"entry_price": 9.5, "entry_date": "20240101"})["exit"]
     assert ex["verdict"] in ("持有", "离场：有效跌破21日线", "离场：自最高回撤")
     assert "早于复权数据起点" in ex["note"]
+
+
+# -- 1.2.3 plain language ------------------------------------------------------------
+
+def test_bought_after_last_close_gets_a_stop_line_not_no_data():
+    closes = list(np.linspace(10, 12, 140))
+    frame = bars(closes)
+    ex = evaluate(frame, last_week_complete=True,
+                  position={"entry_price": 12.1, "entry_date": "20991231"})["exit"]
+    assert ex["verdict"] == "持有" and ex["fresh"] and ex["stop"] is not None
+    assert ex["max_profit_pct"] == 0.0 and not ex["trailing_mode"]
+    broken = evaluate(bars(closes + [closes[-1] * 0.95]), last_week_complete=True,
+                      position={"entry_price": 11.5, "entry_date": "20991231"})["exit"]
+    assert broken["fresh"] and "不该买" in broken["note"]
+
+
+def test_watch_words_are_plain():
+    from backend.personal.service import watch_word
+
+    assert watch_word({"entry": BUY}) == ("可以买", "ok", "买入信号出现了")
+    assert watch_word({"entry": WAIT_CROSS})[0] == "快了"
+    assert watch_word({"entry": WEEKLY_FAIL}) == ("等待", "muted", "趋势不对，先不看")
+    held = {"held": True, "exit": {"verdict": "持有", "stop": 10.0, "close": 11.0, "profit_pct": 0.064}}
+    assert watch_word(held) == ("安全", "muted", "赚 6.4% · 离止损还有 10%")
+    held["exit"].update(close=10.2)
+    assert watch_word(held) == ("留意", "warn", "赚 6.4% · 离止损只差 2.0%")
+    held["exit"].update(close=9.8, fresh=True)
+    assert watch_word(held) == ("留意", "warn", "今天刚买 · 已在止损线下方")
+    held["exit"].update(verdict="离场：有效跌破21日线", fresh=False, profit_pct=-0.021)
+    assert watch_word(held) == ("该卖了", "danger", "亏 2.1% · 跌破止损线")
+
+
+def test_today_has_a_one_line_conclusion_and_plain_instructions(tmp_path, offline_qfq, monkeypatch):
+    day = offline_qfq["trade_date"].iloc[-1]
+    _session(monkeypatch, "盘后", day)
+    runtime = _make_runtime(tmp_path)
+    _call("POST", "/personal/watchlist", runtime, {"ts_code": "000001.SZ", "name": "平安银行"})
+    PlanStore(tmp_path).save({"date": day, "candidates": []})
+    today = _call("GET", "/personal/today", runtime)[1]["data"]
+    hero = today["hero"]
+    assert hero["headline"] == "要做 1 件事" and "不用盯盘" in hero["day_line"]
+    assert hero["basis_line"].startswith("依据 ") and not today["setup"]
+    buy = today["actions"][0]
+    limit = round(14.4 * 1.02, 2)
+    assert buy["headline"] == "买入 平安银行"
+    assert buy["instruction"] == f"挂限价 {limit:,.2f} 元，买 {buy['order']['shares']} 股"
+    assert buy["sub"].startswith(f"开盘高于 {limit:,.2f} 就不买")
+    empty = _call("GET", "/personal/today", _make_runtime(tmp_path / "fresh"))[1]["data"]
+    assert empty["setup"] is True

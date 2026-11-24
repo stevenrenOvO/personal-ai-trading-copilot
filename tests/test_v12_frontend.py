@@ -32,8 +32,8 @@ def test_script_delimiters_balance():
 def test_v12_daily_loop_controls_exist_and_are_wired():
     for element_id in ("wl-code", "wl-add", "wl-view", "pc-code", "pc-submit", "pc-result",
                        "pl-date", "pl-form", "pl-submit", "rp-chase", "stock-options",
-                       "account-subnav", "pane-today", "pane-watch", "pane-plan", "pane-settings",
-                       "td-title", "td-notice", "td-summary", "td-actions", "date-prev", "date-next", "date-face", "us-view"):
+                       "more-toggle", "more-menu", "pc-box", "pane-today", "pane-watch", "pane-plan", "pane-settings",
+                       "td-hero", "td-setup", "td-holds", "td-actions", "date-prev", "date-next", "date-face", "us-view"):
         assert f'id="{element_id}"' in HTML, element_id
     for endpoint in ("/personal/account", "/personal/watchlist/status", "/personal/pretrade",
                      "/personal/plan", "/personal/today", "/personal/today/mark", "/personal/stocks",
@@ -43,7 +43,7 @@ def test_v12_daily_loop_controls_exist_and_are_wired():
 
 
 def test_today_is_the_default_view():
-    assert '<button data-tab="account" class="active">' in HTML
+    assert '<button data-tab="account" data-pane="today" class="active">今日</button>' in HTML
     assert '<section id="account" class="section active">' in HTML
     assert '<section id="dashboard" class="section">' in HTML
     assert 'class="pane active" id="pane-today"' in HTML
@@ -61,3 +61,14 @@ def test_usage_events_used_in_the_page_are_valid_names():
     assert all(_re.fullmatch(r"(tab|pane|action):[a-z_]{1,32}", e) for e in events)
     for tab in _re.findall(r'data-tab="([^"]+)"', HTML):
         assert _re.fullmatch(r"[a-z_]{1,32}", tab), tab  # tab:<name> must be a valid event
+
+
+def test_navigation_keeps_daily_and_research_pages_on_top():
+    nav = HTML[HTML.index('<nav id="tabs"'):HTML.index('</nav>')]
+    main = nav[:nav.index('id="more-menu"')]
+    assert [m for m in re.findall(r'>([^<>]+)</button>', main) if m.strip()] == [
+        "今日", "我的股票", "计划", "市场", "机会", "涨停", "复盘", "更多 ▾"]
+    more = nav[nav.index('id="more-menu"'):]
+    for label in ("设置", "总览", "回测", "AI 助手", "策略健康"):
+        assert f">{label}</button>" in more, label
+    assert 'id="td-market"' in HTML and "renderPulse(" in SCRIPT

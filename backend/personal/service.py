@@ -124,6 +124,8 @@ def watchlist_status(runtime) -> dict[str, Any]:
                               store=store)
         status.update(name=entry.get("name", ""), note=entry.get("note", ""), held=entry["ts_code"] in held,
                       holding=entry.get("holding"))
+        word, level, fact = watch_word(status)
+        status.update(word=word, word_level=level, fact=fact)
         items.append(status)
     return {"evaluation_day": as_of, "items": items, "params": BandParams().to_dict()}
 
@@ -426,6 +428,49 @@ def _day_text(day: Any) -> str:
 
 
 _WEEKDAYS = "一二三四五六日"
+_REGIME_PLAIN = {"strong": "市场向好", "range": "市场震荡", "weak": "市场偏弱"}
+
+
+def _px(value: Any) -> str:
+    """Price for people: 1,486.85."""
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def watch_word(item: dict[str, Any]) -> tuple[str, str, str]:
+    """One status word, its colour level and one plain fact for a stock in 我的股票."""
+    entry, ex = item.get("entry"), item.get("exit") or {}
+    if item.get("held"):
+        verdict = ex.get("verdict") or ""
+        pnl = ""
+        if ex.get("fresh"):
+            pnl = "今天刚买"   # no close since the buy: a return vs. yesterday's close would mislead
+        elif ex.get("profit_pct") is not None:
+            p = float(ex["profit_pct"])
+            pnl = f"{'赚' if p >= 0 else '亏'} {abs(p):.1%}"
+        if verdict.startswith("离场"):
+            why = "跌破止损线" if "21日线" in verdict else "从最高点回落超过 10%"
+            return "该卖了", "danger", " · ".join(x for x in (pnl, why) if x)
+        stop, close = ex.get("stop"), ex.get("close")
+        if verdict == NO_DATA or not stop or not close:
+            return "看不清", "muted", "数据不够，暂时算不出止损线"
+        distance = close / stop - 1
+        if distance < 0:
+            return "留意", "warn", " · ".join(x for x in (pnl, "已在止损线下方") if x)
+        if distance <= _NEAR_STOP:
+            return "留意", "warn", " · ".join(x for x in (pnl, f"离止损只差 {distance:.1%}") if x)
+        return "安全", "muted", " · ".join(x for x in (pnl, f"离止损还有 {distance:.0%}") if x)
+    words = {
+        BUY: ("可以买", "ok", "买入信号出现了"),
+        "等待金叉": ("快了", "warn", "快到买点了"),
+        "金叉未放量": ("快了", "warn", "信号出现了，但成交量不够"),
+        "周线符合，等待日线信号": ("等待", "muted", "趋势向上，等买点"),
+        BELOW_MA: ("等待", "muted", "跌破 21 日线，先不看"),
+        WEEKLY_FAIL: ("等待", "muted", "趋势不对，先不看"),
+    }
+    return words.get(entry, ("看不清", "muted", "数据不够，暂时判断不了"))
 
 
 def _session_label(day: Optional[str]) -> str:
@@ -503,15 +548,18 @@ def today_view(runtime) -> dict[str, Any]:
     def label(code, name):
         return f"{name} {code}" if name else code
 
-    def add(kind, level, code, name, title, detail, next_step, check=False, order=None):
+    def add(kind, level, code, name, title, detail, next_step, check=False, order=None,
+            headline="", instruction="", sub=""):
         key = f"{kind}:{code or 'plan'}"
         actions.append({"kind": kind, "level": level, "ts_code": code, "name": name or "", "title": title,
                         "detail": detail, "next_step": next_step, "check": check, "order": order,
-                        "key": key, "mark": marks.get(key)})
+                        "key": key, "mark": marks.get(key),
+                        "headline": headline or title, "instruction": instruction or next_step, "sub": sub})
 
     def size(entry, stop):
         if account["unknown_shares"]:
-            return {"lots": 0, "reason": "有持仓没填股数，总仓位和可用资金不准，先在观察池补填股数"}
+            return {"lots": 0, "reason": "有持仓没填股数，总仓位和可用资金不准，先在观察池补填股数",
+                    "plain": "有持仓没填股数，先补上再算能买多少"}
         if not entry or not stop or float(stop) >= float(entry):
             return None
         try:
@@ -520,19 +568,26 @@ def today_view(runtime) -> dict[str, Any]:
         except ValueError:
             return None
 
+    def short(name, code):
+        return name or code
+
     for pos in account["positions"]:
         code, name, ex = pos["ts_code"], pos.get("name", ""), pos.get("exit") or {}
         verdict, stop, close = ex.get("verdict") or "", ex.get("stop"), pos.get("close")
         shares = f" {pos['shares']} 股" if pos.get("shares") else "（全部）"
+        all_shares = f"全部 {pos['shares']} 股" if pos.get("shares") else "全部"
         if verdict.startswith("离场"):
             add("sell", "danger", code, name, f"卖出 {label(code, name)}",
                 f"{verdict}：{ex.get('rule', '')}；{_day_text(basis)} 收盘 {close}，离场线 {stop}",
                 f"{target}开盘后卖出{shares}；成交后在观察池点「已卖出」",
-                order={"side": "sell", "when": target, "shares": pos.get("shares")})
+                order={"side": "sell", "when": target, "shares": pos.get("shares")},
+                headline=f"卖出 {short(name, code)}", instruction=f"开盘后卖掉{all_shares}",
+                sub="跌破了止损线" if "21日线" in verdict else "从最高点回落超过了 10%")
             continue
         if verdict == NO_DATA or not stop:
             add("near_stop", "warn", code, name, f"无法判断离场：{label(code, name)}",
-                ex.get("reason") or "缺少复权日线或买入日数据", "检查数据后手动确认离场线")
+                ex.get("reason") or "缺少复权日线或买入日数据", "检查数据后手动确认离场线",
+                headline=short(name, code), instruction="数据不够，暂时算不出止损线，请自己留意")
             continue
         distance = (close / stop - 1) if close and stop else None
         stop_order = f"止损条件单：价格 ≤ {stop} 时卖出{shares}（每天收盘后按新的离场线更新）"
@@ -540,15 +595,23 @@ def today_view(runtime) -> dict[str, Any]:
         if hp and hp["action"] in ("离场", "减仓"):
             add("plan_exit", "warn", code, name, f"计划{hp['action']} {label(code, name)}",
                 f"来自 {_day_text(plan['date'])} 的计划{('：' + hp['note']) if hp.get('note') else ''}",
-                f"{target}按计划{hp['action']}；成交后在观察池更新持有状态")
+                f"{target}按计划{hp['action']}；成交后在观察池更新持有状态",
+                headline=f"按计划{hp['action']} {short(name, code)}", instruction=f"开盘后{hp['action']}",
+                sub=hp.get("note") or "")
         elif distance is not None and distance <= _NEAR_STOP:
             add("near_stop", "warn", code, name, f"接近离场线 {label(code, name)}",
                 f"{_day_text(basis)} 收盘 {close}，离场线 {stop}，只差 {distance:.1%}", stop_order,
-                order={"side": "stop", "price": stop, "shares": pos.get("shares")})
+                order={"side": "stop", "price": stop, "shares": pos.get("shares")},
+                headline=short(name, code), instruction=f"止损单设在 {_px(stop)}",
+                sub=(ex.get("note") or "已在止损线下方，收盘仍在线下就该卖") if distance < 0
+                else f"只差 {distance:.1%} 就会卖出")
         else:
             add("hold", "info", code, name, f"持有 {label(code, name)}",
                 f"离场线 {stop}" + (f"，距 {_day_text(basis)} 收盘 {distance:.1%}" if distance is not None else ""),
-                stop_order, order={"side": "stop", "price": stop, "shares": pos.get("shares")})
+                stop_order, order={"side": "stop", "price": stop, "shares": pos.get("shares")},
+                headline=short(name, code), instruction=f"止损单设在 {_px(stop)}",
+                sub=(f"离止损还有 {distance:.0%}" if distance is not None else "")
+                + ("（刚买入）" if ex.get("fresh") else ""))
 
     for item in watch["items"]:
         code = item["ts_code"]
@@ -561,14 +624,19 @@ def today_view(runtime) -> dict[str, Any]:
         in_plan = code in planned
         detail = (f"{_day_text(cross.get('date'))} 金叉放量（量比 {cross.get('volume_ratio')}）；"
                   + (f"在 {_day_text(plan['date'])} 的计划内" if in_plan else "不在计划内"))
+        nm = short(item.get("name", ""), code)
         if sized and sized["lots"] > 0:
             add("buy", "ok", code, item.get("name", ""), f"买点 {label(code, item.get('name', ''))}", detail,
                 f"{target}限价 ≤ {limit} 买入 {sized['shares']} 股（约 {sized['value']:,.0f} 元）；"
                 f"开盘高于 {limit} 就放弃；成交后设止损条件单 ≤ {stop}", check=True,
-                order={"side": "buy", "limit": limit, "shares": sized["shares"], "stop": stop})
+                order={"side": "buy", "limit": limit, "shares": sized["shares"], "stop": stop},
+                headline=f"买入 {nm}", instruction=f"挂限价 {_px(limit)} 元，买 {sized['shares']} 股",
+                sub=f"开盘高于 {_px(limit)} 就不买 · 买到后止损设 {_px(stop)}" + ("" if in_plan else " · 不在计划内"))
         else:
             add("buy", "warn", code, item.get("name", ""), f"买点 {label(code, item.get('name', ''))}（买不了）",
-                detail, f"按你的风控买不了：{(sized or {}).get('reason') or '缺少限价或止损价'}", check=True)
+                detail, f"按你的风控买不了：{(sized or {}).get('reason') or '缺少限价或止损价'}", check=True,
+                headline=f"买入 {nm}（暂时买不了）",
+                instruction=(sized or {}).get("plain") or "按你的资金和仓位上限，连 1 手（100 股）都买不了")
 
     for code, cand in planned.items():
         if code in held or (status_by_code.get(code) or {}).get("entry") == BUY:
@@ -582,28 +650,56 @@ def today_view(runtime) -> dict[str, Any]:
         state = item.get("entry") or "不在观察池，状态未知"
         order = ({"side": "buy", "limit": entry, "shares": shares, "stop": stop}
                  if entry and stop and shares else None)
+        nm = short(cand.get("name", "") or item.get("name", ""), code)
+        word = watch_word(item)[0] if item else "不在我的股票里"
         add("plan", "info", code, cand.get("name", "") or item.get("name", ""),
             f"计划候选 {label(code, cand.get('name', '') or item.get('name', ''))}",
             f"{cand.get('entry_condition') or '计划买入'}（当前状态：{state}）",
             (f"条件满足时：限价 ≤ {entry} 买入 {shares} 股，止损 {stop}" if order
-             else "条件满足时先做交易前检查"), check=True, order=order)
+             else "条件满足时先做交易前检查"), check=True, order=order,
+            headline=f"计划买入 {nm}",
+            instruction=(f"条件到了再买：限价 {_px(entry)}，{shares} 股，止损 {_px(stop)}" if order
+                         else "条件到了再买，先点「能买吗」检查"),
+            sub=f"现在：{word}" + (f" · {cand['entry_condition']}" if cand.get("entry_condition") else ""))
 
     for code in account["unknown_shares"]:
         name = held.get(code, {}).get("name", "")
         add("reminder", "warn", code, name, f"补填股数 {label(code, name)}",
             "持有但没填股数：总仓位、可用资金和新的买入股数都无法准确计算",
-            "在观察池点「标记持有」重新保存，填上股数")
+            "在观察池点「标记持有」重新保存，填上股数",
+            headline=f"补填股数：{short(name, code)}", instruction="在「我的股票」里点它，补上股数")
     if after_close and basis and basis not in dates:
         add("reminder", "warn", "", "", "保存明日计划", "今天收盘后还没有保存计划",
-            "在「计划」里写下明日候选（最多 3 只）和每只持仓的动作")
+            "在「计划」里写下明日候选（最多 3 只）和每只持仓的动作",
+            headline="写明日计划", instruction="花 2 分钟写下明天想买什么、持有的怎么处理")
     elif not dates:
         add("reminder", "info", "", "", "还没有任何计划", "没有计划时，任何买入都属于计划外交易",
-            "收盘后在「计划」里保存第一份计划")
+            "收盘后在「计划」里保存第一份计划",
+            headline="写第一份计划", instruction="收盘后在「计划」里写下明天想买什么")
 
     actions.sort(key=lambda a: _ACTION_ORDER.get(a["kind"], 9))
     if not any(a["kind"] != "hold" for a in actions):
         add("none", "info", "", "", "没有需要处理的事项", "持仓没有触发离场，观察池没有出现买点。",
-            "继续按计划等待；持仓的止损条件单保持有效")
+            "继续按计划等待；持仓的止损条件单保持有效",
+            headline="不用操作", instruction="持有的股票止损单保持不变")
+
+    todo = [a for a in actions if a["kind"] not in ("hold", "none")]
+    holds = [a for a in actions if a["kind"] == "hold"]
+    room = round(profile.capital * cap - account["exposure"], 2) if cap is not None else None
+    if cap is not None:
+        market_line = f"{_REGIME_PLAIN.get(regime, '市场')}，最多用 {profile.capital * cap:,.0f} 元（{cap:.0%}）"
+        if account["exposure"] > 0:
+            market_line += f"，还能用 {max(room, 0):,.0f} 元"
+    else:
+        market_line = "市场状态还不知道，买之前先点「能买吗」检查"
+    hero = {
+        "day_line": (f"{next_label} · 开盘前设好就行，不用盯盘" if after_close
+                     else f"今天 {_session_label(trading_day)} · 按单执行，不用盯盘"),
+        "headline": f"要做 {len(todo)} 件事" if todo else "不用操作",
+        "market_line": market_line,
+        "holds_line": f"其余 {len(holds)} 只持有中，止损单都已设好" if holds else "",
+        "basis_line": f"依据 {_day_text(basis)} 收盘" if basis else "",
+    }
 
     return {
         "trading_day": trading_day, "phase": phase, "evaluation_day": basis, "basis_date": basis,
@@ -616,11 +712,12 @@ def today_view(runtime) -> dict[str, Any]:
         "account": {"capital": account["capital"], "cash": account["cash"], "cash_estimated": True,
                     "exposure": account["exposure"], "exposure_pct": account["exposure_pct"],
                     "positions": len(account["positions"]), "unknown_shares": account["unknown_shares"],
-                    "room": round(profile.capital * cap - account["exposure"], 2) if cap is not None else None},
+                    "room": room},
         "counts": {"sell": sum(a["kind"] == "sell" for a in actions),
                    "buy": sum(a["kind"] == "buy" and a["level"] == "ok" for a in actions),
                    "watch": len(watch["items"])},
         "chase_limit": profile.chase_limit,
+        "hero": hero, "setup": not watch["items"] and not account["positions"],
         "actions": actions,
         "note": "只依据你自己的规则和记录列出待办，不构成买卖建议；条件单由你在券商 App 设置。",
     }

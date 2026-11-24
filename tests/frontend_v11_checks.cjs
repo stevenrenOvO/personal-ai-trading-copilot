@@ -396,20 +396,25 @@ async function personal_profile_save() {
 
 // ---- V1.2.2 execution list / watchlist with holdings / plan ------------------------
 const TODAY = {trading_day:'20261118', phase:'盘后', evaluation_day:'20261118', basis_date:'20261118', mode:'next',
-  title:'执行单 · 11-19 周四', notice:'2026-11-18 收盘数据已出：以下是 11-19 周四 的执行单。', plan_date:'20261118', plan_saved_today:true,
+  title:'执行单 · 11-19 周四', notice:'', plan_date:'20261118', plan_saved_today:true, setup:false,
+  hero:{day_line:'11-19 周四 · 开盘前设好就行，不用盯盘', headline:'要做 2 件事', market_line:'市场偏弱，最多用 2,400 元（20%），还能用 1,170 元',
+        holds_line:'其余 1 只持有中，止损单都已设好', basis_line:'依据 2026-11-18 收盘'},
   market:{state:'弱势', regime:'weak', regime_label:'弱势/趋势不明', exposure_cap:0.2},
   account:{capital:12000, cash:10770, exposure:1230, exposure_pct:0.1025, positions:2, room:1170},
   counts:{sell:1, buy:1, watch:3},
   actions:[
     {kind:'sell', level:'danger', ts_code:'000001.SZ', name:'平安银行', title:'卖出 平安银行 000001.SZ', key:'sell:000001.SZ', mark:null,
+     headline:'卖出 平安银行', instruction:'开盘后卖掉全部 100 股', sub:'跌破了止损线',
      detail:'离场：有效跌破21日线', next_step:'下一交易日开盘后卖出 100 股', check:false, order:{side:'sell', shares:100}},
     {kind:'buy', level:'ok', ts_code:'600519.SH', name:'贵州茅台', title:'买点 贵州茅台 600519.SH', key:'buy:600519.SH', mark:null,
-     detail:'2026-11-18 金叉放量（量比 1.8）；在计划内', next_step:'下一交易日限价 ≤ 1483.25 买入 100 股；开盘高于 1483.25 就放弃',
+     headline:'买入 贵州茅台', instruction:'挂限价 1,483.25 元，买 100 股', sub:'开盘高于 1,483.25 就不买 · 买到后止损设 1,385.61',
+     detail:'2026-11-18 金叉放量（量比 1.8）；在计划内', next_step:'下一交易日限价 ≤ 1483.25 买入 100 股',
      check:true, order:{side:'buy', limit:1483.25, shares:100, stop:1385.61}},
     {kind:'hold', level:'info', ts_code:'600036.SH', name:'招商银行', title:'持有 招商银行 600036.SH', key:'hold:600036.SH',
+     headline:'招商银行', instruction:'止损单设在 40.10', sub:'离止损还有 6%',
      mark:{status:'done', note:''}, detail:'离场线 40.1', next_step:'止损条件单：价格 ≤ 40.1 时卖出 100 股', check:false,
      order:{side:'stop', price:40.1, shares:100}}],
-  note:'只依据你自己的规则和记录列出待办，不构成买卖建议。'};
+  note:''};
 function dailyLoopReply(url) {
   if (url === '/personal/risk-profile') return response({status:'ok', meta:{source:'saved'}, data:{capital:12000, risk_per_trade:0.01,
     max_risk_per_trade:0.02, max_single_weight:0.2, first_entry_min:0.1, first_entry_max:0.15, max_stop_pct:0.08, chase_limit:0.02,
@@ -418,6 +423,7 @@ function dailyLoopReply(url) {
   if (url === '/personal/account') return wrapped({positions:[{ts_code:'600036.SH', name:'招商银行', shares:100}]});
   if (url === '/personal/watchlist/status') return wrapped({evaluation_day:'20261118', items:[{ts_code:'600036.SH', name:'招商银行',
     entry:'周线符合，等待日线信号', held:true, holding:{cost:43, shares:100, entry_date:'20261113'},
+    word:'安全', word_level:'muted', fact:'亏 2.0% · 离止损还有 3%',
     exit:{verdict:'持有', stop:40.1, profit_pct:-0.02}, weekly:{week_close:41.5, ma:40.2, rising:true}, macd:{dif:0.12},
     ma:{ma21:40.5, distance_pct:0.025, suggested_stop:40.1}, conditions:[], basis:{adjusted:true, source:'tencent_qfq',
     fetched_at:'2026-11-18T16:00:00', last_date:'20261118', appended_raw_dates:[], warnings:[]}}]});
@@ -425,6 +431,13 @@ function dailyLoopReply(url) {
     updated_at:'2026-11-18T16:30:00', candidates:[{ts_code:'601318.SH', name:'中国平安', entry_price:56.5, stop_price:54.2,
     shares:null, entry_condition:'回踩21日线企稳'}], holdings:[{ts_code:'600036.SH', action:'离场'}], market_note:'弱势', note:''}});
   if (url.startsWith('/personal/stocks')) return wrapped([{ts_code:'600519.SH', name:'贵州茅台'}]);
+  const day = {status:'ok', as_of:'20261118'};
+  if (url === '/market/state?date=20261118') return response({status:'ok', meta:day,
+    data:{date:'20261118', state:'亢奋', advance_count:4294, decline_count:780}});
+  if (url === '/board/environment?date=20261118') return response({status:'ok', meta:day,
+    data:{date:'20261118', limit_up_count:151, emotion_cycle:'高潮', leader_height:5, ladder:{max_height:5}}});
+  if (url === '/opportunities/plan?date=20261118') return response({status:'ok', meta:{status:'ok', as_of:'20261117'},
+    data:{date:'20261117', available:true, can_attack:true, max_new_positions:1, tier_counts:{A:3, B:126, C:4}}});
   throw new Error('Unstubbed ' + url);
 }
 
@@ -433,15 +446,18 @@ async function daily_loop_render() {
   page.setFetch(url => dailyLoopReply(url));
   await page.run("loadDailyLoop()");
   for (let i = 0; i < 6; i++) await flush();
-  assert.match(e.get('wl-view').innerHTML, /招商银行 600036.SH/);
-  assert.match(e.get('wl-view').innerHTML, /成本 43.000 · 100 股 · 2026-11-13 买入，按收盘 -2.0%/);
-  assert.match(e.get('wl-view').innerHTML, /data-wl="sold" data-code="600036.SH"/);
-  assert.match(e.get('wl-view').innerHTML, /规则按 2026-11-18 收盘计算/);
+  const wl = e.get('wl-view').innerHTML;
+  assert.match(wl, /group-label">持有中/);
+  assert.match(wl, /<b>招商银行<\/b><span class="muted">亏 2.0% · 离止损还有 3%<\/span>/);
+  assert.match(wl, /chip chip-muted">安全/);
+  assert.match(wl, /成本 43.00 · 100 股 · 2026-11-13 买入 · 止损线 40.10/);
+  assert.match(wl, /data-wl="sold" data-code="600036.SH">我卖了/);
+  assert.doesNotMatch(wl, /观察中/);
   assert.match(e.get('pl-saved').innerHTML, /第 2 版/);
   assert.match(e.get('pl-form').innerHTML, /value="中国平安 601318.SH"/);
   assert.match(e.get('pl-form').innerHTML, /<option selected>离场<\/option>/);
   assert.match(e.get('pl-form').innerHTML, /<label>招商银行<\/label>/);
-  assert.doesNotMatch(e.get('wl-view').innerHTML, /<table/);
+  assert.doesNotMatch(wl, /<table/);
 }
 
 async function today_render() {
@@ -452,22 +468,45 @@ async function today_render() {
   for (let i = 0; i < 5; i++) await flush();
   assert.ok(requested.includes('/personal/today'));
   assert.ok(!requested.includes('/personal/watchlist/status'), 'other panes load only when opened');
-  assert.equal(e.get('td-title').textContent, '执行单 · 11-19 周四');
-  assert.match(e.get('td-notice').textContent, /11-19 周四 的执行单/);
+  const hero = e.get('td-hero').innerHTML;
+  assert.match(hero, /hero-title">要做 2 件事/);
+  assert.match(hero, /市场偏弱，最多用 2,400 元/);
+  assert.match(hero, /11-19 周四 · 开盘前设好就行/);
   const html = e.get('td-actions').innerHTML;
-  assert.ok(html.indexOf('卖出 平安银行') < html.indexOf('买点 贵州茅台'), 'exits first');
-  assert.match(html, /data-act="sold"/);
+  assert.ok(html.indexOf('卖出 平安银行') < html.indexOf('买入 贵州茅台'), 'exits first');
+  assert.match(html, /todo-main">开盘后卖掉全部 100 股/);
+  assert.match(html, /todo-main">挂限价 1,483.25 元，买 100 股/);
+  assert.match(html, /chip chip-danger">该卖了/);
+  assert.match(html, /chip chip-ok">可以买/);
   assert.match(html, /data-act="bought"/);
-  assert.match(html, /data-f="cost" inputmode="decimal" placeholder="成交价" value="1483.25"/);
-  assert.match(html, /data-act="check"/);
-  assert.match(html, /持有中（1）· 止损条件单/);
-  assert.match(html, /chip-ok">已执行/);
-  assert.match(html, /data-act="undo"/);
-  assert.match(e.get('td-summary').innerHTML, /可用资金（估算）/);
-  assert.match(e.get('td-context').textContent, /依据 2026-11-18 收盘 · 计划 2026-11-18/);
+  assert.match(html, /data-act="sold"/);
+  assert.match(html, /data-act="why">为什么 ▸/);
+  assert.doesNotMatch(html, /招商银行/, 'holdings are summarised separately');
+  assert.match(e.get('td-holds').innerHTML, /其余 1 只持有中，止损单都已设好/);
+  assert.match(e.get('td-holds').innerHTML, /止损单设在 40.10/);
+  assert.equal(e.get('td-setup').innerHTML, '');
+  const pulse = e.get('td-market').innerHTML;
+  assert.match(pulse, /今天的盘面/);
+  assert.match(pulse, /依据 2026-11-18 收盘/);
+  assert.match(pulse, /data-go="market"><span class="pulse-k">市场 ›<\/span><span class="pulse-v">亢奋<\/span><span class="pulse-s">涨 4,294 \/ 跌 780/);
+  assert.match(pulse, /data-go="board">.*151 家.*高潮 · 最高 5 板/);
+  assert.match(pulse, /data-go="opportunities">.*待确认.*这天还没有机会结果/, 'a plan for another day is not shown as today');
+  const slow = deferred();
+  page.setFetch(url => url.startsWith('/opportunities/plan') ? slow.promise : dailyLoopReply(url));
+  const reload = page.run("loadToday()");
+  for (let i = 0; i < 5; i++) await flush();
+  assert.match(e.get('td-market').innerHTML, /151 家/, 'market and limit-up do not wait for opportunities');
+  assert.match(e.get('td-market').innerHTML, /计算中…/);
+  slow.resolve(dailyLoopReply('/opportunities/plan?date=20261118'));
+  await reload;
+  assert.doesNotMatch(e.get('td-market').innerHTML, /计算中/);
+  page.setFetch(url => wrapped({...TODAY, setup:true, actions:[], hero:{...TODAY.hero, headline:'不用操作', holds_line:''}}));
+  await page.run("loadToday()");
+  assert.match(e.get('td-setup').innerHTML, /先花 2 分钟设置一下/);
+  assert.match(e.get('td-hero').innerHTML, /不用操作/);
   page.setFetch(() => response({status:'error', detail:'服务暂时无法完成请求'}, 500));
   await page.run("loadToday()");
-  assert.match(e.get('td-actions').innerHTML, /数据获取失败/);
+  assert.match(e.get('td-hero').innerHTML, /数据获取失败/);
 }
 
 async function pretrade_render() {
@@ -517,7 +556,7 @@ async function watchlist_add_by_name() {
   e.get('wl-code').value = ' 茅台 ';
   await e.get('wl-add').onclick();
   assert.deepEqual(body, {ts_code:'茅台'});
-  assert.match(e.get('wl-result').innerHTML, /已加入 贵州茅台 600519.SH/);
+  assert.match(e.get('wl-result').innerHTML, /已添加 贵州茅台 600519.SH/);
   page.setFetch(() => response({status:'error', detail:'「平安」匹配到多只：平安银行（000001.SZ）、中国平安（601318.SH），请选具体的一只'}, 400));
   e.get('wl-code').value = '平安';
   await e.get('wl-add').onclick();

@@ -104,6 +104,56 @@
     .act-form[hidden] { display:none; }
     .act-btns { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
     .holding-line { margin:4px 0; font-size:13px; color:var(--text-2); }
+    /* ---- V1.2.3 简化：一句话结论、一个状态词 ---- */
+    body[data-tab="account"] .system-status { display:none; }
+    #tabs { flex-wrap:wrap; }
+    .more-toggle { margin-left:auto; }
+    .more-menu { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; gap:2px; border-top:1px solid var(--line-soft); }
+    .more-menu[hidden] { display:none; }
+    .hero-title { font-size:28px; font-weight:700; letter-spacing:-.01em; margin:6px 0 4px; }
+    .hero-market { color:var(--text-2); font-size:14px; }
+    .hero-basis { margin-top:6px; }
+    .todos { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
+    .todo { background:var(--panel); border:1px solid var(--line-soft); border-left:3px solid var(--line); border-radius:var(--radius-sm); padding:14px 16px; }
+    .todo.lv-danger { border-left-color:var(--danger); } .todo.lv-ok { border-left-color:var(--accent); }
+    .todo.lv-warn { border-left-color:var(--warn); } .todo.lv-info { border-left-color:var(--info); }
+    .todo.marked { opacity:.6; }
+    .todo-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .todo-title { font-size:16px; font-weight:650; }
+    .todo-main { font-size:15px; margin-top:6px; }
+    .todo-sub { font-size:13px; color:var(--text-2); margin-top:2px; }
+    .todo-foot { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .todo-why { margin-top:8px; font-size:12px; color:var(--muted); line-height:1.8; }
+    .linkish, button.linkish { background:transparent; border:0; color:var(--muted); padding:0; font-size:12px; font-weight:500; }
+    .linkish:hover { color:var(--text); filter:none; }
+    details.holds { margin-top:12px; }
+    details.holds > summary { cursor:pointer; color:var(--text-2); }
+    .setup { margin-bottom:12px; border-color:var(--info); }
+    .setup-title { font-size:16px; font-weight:650; }
+    .setup ol { margin:8px 0 12px 20px; padding:0; line-height:1.9; color:var(--text-2); }
+    .group-label { color:var(--muted); font-size:12px; margin:10px 0 2px; }
+    .stock { border-bottom:1px solid var(--line-soft); }
+    .stock:last-child { border-bottom:0; }
+    .stock-row, button.stock-row { width:100%; display:flex; justify-content:space-between; align-items:center; gap:10px;
+      background:transparent; border:0; border-radius:8px; color:var(--text); padding:12px 4px; text-align:left; font-weight:400; }
+    .stock-row:hover { background:var(--panel2); filter:none; }
+    .stock-name { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .stock-name b { font-size:15px; font-weight:650; }
+    .stock-detail { padding:2px 4px 12px; }
+    .add-row { display:flex; gap:8px; margin-top:12px; }
+    .add-row input { flex:1; min-width:0; }
+    .empty { padding:6px 0; color:var(--muted); }
+    .pulse { margin-top:12px; }
+    .pulse:empty { display:none; }
+    .pulse-head { display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap; font-size:13px; color:var(--text-2); margin:0 2px 6px; }
+    .pulse-tiles { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
+    .pulse-tile, button.pulse-tile { display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left; font-weight:400;
+      background:var(--panel); border:1px solid var(--line-soft); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; min-width:0; }
+    .pulse-tile:hover { background:var(--panel2); filter:none; }
+    .pulse-k { font-size:12px; color:var(--muted); }
+    .pulse-v { font-size:17px; font-weight:650; }
+    .pulse-s { font-size:12px; color:var(--text-2); overflow-wrap:anywhere; }
+    @media (max-width:720px) { .hero-title { font-size:24px; } .more-toggle { margin-left:0; } }
     .subnav { display:inline-flex; flex-wrap:wrap; gap:2px; padding:3px; margin:0 0 16px; background:var(--panel); border:1px solid var(--line-soft); border-radius:12px; }
     .subnav button { background:transparent; border:0; color:var(--muted); font-weight:500; padding:7px 14px; border-radius:9px; }
     .subnav button:hover { color:var(--text); filter:none; }
@@ -161,7 +211,7 @@
     body { font-size:14px; }
     header { flex-wrap:wrap; gap:8px; }
     header h1 { font-size:18px; }
-    #tabs { flex-wrap:nowrap; scrollbar-width:none; }
+    #tabs { flex-wrap:wrap; row-gap:0; scrollbar-width:none; } /* 8 个入口在手机上换成两行，不藏在横向滚动里 */
     #tabs::-webkit-scrollbar { display:none; }
     header .sub { display:none; }
     #tabs button { padding:6px 10px; font-size:13px; }
@@ -233,16 +283,23 @@
   </header>
 
   <nav id="tabs" aria-label="功能导航">
-    <button data-tab="account" class="active">今日 · 账户</button>
-    <button data-tab="dashboard">总览</button>
+    <button data-tab="account" data-pane="today" class="active">今日</button>
+    <button data-tab="account" data-pane="watch">我的股票</button>
+    <button data-tab="account" data-pane="plan">计划</button>
+    <span class="divider"></span>
     <button data-tab="market">市场</button>
     <button data-tab="opportunities">机会</button>
-    <button data-tab="board">涨停环境</button>
+    <button data-tab="board">涨停</button>
     <button data-tab="review">复盘</button>
-    <span class="divider"></span>
-    <button data-tab="backtest">回测</button>
-    <button data-tab="ai">AI 助手</button>
-    <button data-tab="health">策略健康</button>
+    <button type="button" id="more-toggle" class="more-toggle" aria-expanded="false" aria-controls="more-menu">更多 ▾</button>
+    <div id="more-menu" class="more-menu" hidden>
+      <button data-tab="account" data-pane="settings">设置</button>
+      <span class="divider"></span>
+      <button data-tab="dashboard">总览</button>
+      <button data-tab="backtest">回测</button>
+      <button data-tab="ai">AI 助手</button>
+      <button data-tab="health">策略健康</button>
+    </div>
   </nav>
 
   <details class="system-status" id="system-status">
@@ -320,35 +377,31 @@
 
     <section id="account" class="section active">
       <datalist id="stock-options"></datalist>
-      <div class="subnav" id="account-subnav" role="tablist" aria-label="我的账户分区">
-        <button type="button" class="active" data-pane="today" aria-selected="true">今日</button>
-        <button type="button" data-pane="watch" aria-selected="false">观察池</button>
-        <button type="button" data-pane="plan" aria-selected="false">计划</button>
-        <button type="button" data-pane="settings" aria-selected="false">⚙ 设置</button>
-      </div>
       <div class="pane active" id="pane-today">
-        <div class="card today-card">
-          <div class="card-head"><h3 id="td-title">执行单</h3><span id="td-context" class="muted"></span></div>
-          <div id="td-notice" class="notice"></div>
-          <div id="td-summary" class="strip"></div>
-          <div id="td-actions" class="actions"><span class="muted">加载中…</span></div>
-          <div class="muted note">只依据你自己的规则和记录列出待办，不构成买卖建议；条件单由你在券商 App 设置，本工具不下单。</div>
+        <div id="td-setup"></div>
+        <div class="card hero" id="td-hero"><span class="muted">加载中…</span></div>
+        <div id="td-market" class="pulse" aria-live="polite"></div>
+        <div id="td-actions" class="todos"></div>
+        <div id="td-holds"></div>
+        <div class="muted note">只依据你自己的规则和记录列出要做的事，不构成买卖建议；挂单由你在券商 App 完成。</div>
+      </div>
+      <div class="pane" id="pane-watch">
+        <div class="card">
+          <div id="wl-view" class="muted">加载中…</div>
+          <div class="add-row"><input id="wl-code" placeholder="输入股票名称，如 贵州茅台" aria-label="添加股票"><button id="wl-add">添加</button></div>
+          <div id="wl-result" class="muted request-result" role="status"></div>
         </div>
-        <div class="card"><h3>交易前检查</h3>
+        <details class="card" id="pc-box">
+          <summary>能买吗？手动检查一只股票</summary>
           <div class="form-row"><label>股票</label><input id="pc-code" placeholder="股票名称，如 贵州茅台"></div>
           <div class="form-row"><label>买入价</label><input id="pc-entry" placeholder="留空用限价：昨收 + 追高上限"></div>
           <div class="form-row"><label>止损价</label><input id="pc-stop" placeholder="留空用 21 日线下方 1%"></div>
           <div class="form-row"><label>单笔风险</label><select id="pc-risk"><option value="">默认</option><option value="0.01">1%</option><option value="0.015">1.5%</option><option value="0.02">2%</option></select><button id="pc-submit">检查</button></div>
           <div id="pc-result" class="muted" role="status">检查规则是否满足、可买手数和总仓位余量。只做检查，不会下单。</div>
-        </div>
-      </div>
-      <div class="pane" id="pane-watch">
-        <div class="card"><h3>观察池 · 波段规则状态（最多 10 只）</h3>
-          <div class="form-row"><label>股票</label><input id="wl-code" placeholder="输入名称，如 贵州茅台"><button id="wl-add">加入</button></div>
-          <div id="wl-result" class="muted request-result" role="status"></div>
-          <div id="wl-view" class="muted">加载中…</div>
-          <div class="muted" style="margin-top:8px;">买入后点「标记持有」（只需成本价和日期，股数可选）；卖出后点「已卖出」。价格每天自动更新，不用和券商账户逐日对账。规则：周收盘在上升的 13 周均线之上；日线 DIF 回零轴附近、绿柱缩短、金叉放量；有效跌破 21 日线离场；盈利曾达 15% 后改为自最高收盘回撤 10% 离场。均线和 MACD 用前复权日线、按收盘价计算。</div>
-        </div>
+        </details>
+        <details class="card rule-note"><summary>这些状态是怎么判断的</summary>
+          <div class="muted" style="margin-top:8px;">可以买：周线趋势向上，日线出现放量的买入信号。快了：趋势向上，信号快出现了。等待：趋势不对或跌破 21 日线，先不看。持有的股票：跌破止损线（21 日线下方，或赚过 15% 后从最高点回落 10%）就该卖。全部按收盘价、前复权日线计算。</div>
+        </details>
       </div>
       <div class="pane" id="pane-plan">
         <div class="card"><h3>收盘后计划（新候选最多 3 只）</h3>
@@ -378,6 +431,7 @@
           </details>
         </div>
         <div class="card"><h3>本机使用记录（不联网）</h3><div id="us-view" class="muted">加载中…</div></div>
+        </div>
       </div>
     </section>
 
@@ -623,19 +677,31 @@
       return `<div class="metric"><div class="label">${esc(label)}</div><div class="value ${cls||''}">${v}</div></div>`;
     }
 
+    function activateNav(btn) {
+      document.querySelectorAll('#tabs button').forEach(b => { b.classList.remove('active'); b.removeAttribute('aria-current'); });
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      btn.classList.add('active');
+      btn.setAttribute('aria-current', 'page');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+      if (document.body) document.body.dataset.tab = btn.dataset.tab;
+    }
     document.querySelectorAll('#tabs button').forEach(btn => {
+      if (!btn.dataset || !btn.dataset.tab) return;
       btn.setAttribute('aria-controls', btn.dataset.tab);
       btn.onclick = () => {
-        document.querySelectorAll('#tabs button').forEach(b => { b.classList.remove('active'); b.removeAttribute('aria-current'); });
-        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-        btn.classList.add('active');
-        btn.setAttribute('aria-current', 'page');
-        document.getElementById(btn.dataset.tab).classList.add('active');
-        if (document.body) document.body.dataset.tab = btn.dataset.tab;
-        track('tab:' + btn.dataset.tab);
+        activateNav(btn);
+        const inMore = !!(btn.closest && btn.closest('#more-menu'));
+        if (!inMore) { $('more-menu').hidden = true; $('more-toggle').setAttribute('aria-expanded', 'false'); }
+        if (btn.dataset.pane) { track('pane:' + btn.dataset.pane); showPane(btn.dataset.pane, false); }
+        else track('tab:' + btn.dataset.tab);
         loadTab(btn.dataset.tab);
       };
     });
+    $('more-toggle').onclick = () => {
+      const menu = $('more-menu');
+      menu.hidden = !menu.hidden;
+      $('more-toggle').setAttribute('aria-expanded', String(!menu.hidden));
+    };
     document.querySelectorAll('.section').forEach(section => {
       const status = document.createElement('div');
       status.id = 'loading-' + section.id;
@@ -866,7 +932,7 @@
         ['四板及以上', b.ladder ? b.ladder.high_board : null, ''],
         ['最高连板', b.ladder ? b.ladder.max_height : null, ''],
         ['最高连板股', b.leader_name ? `${b.leader_name}（${b.leader_height}板）` : null, ''],
-        ['昨日涨停溢价', b.yesterday_premium_available === false ? null : b.yesterday_limit_up_premium, '']
+        ['昨日涨停溢价', b.yesterday_premium_available === false || b.yesterday_limit_up_premium == null ? null : Number(b.yesterday_limit_up_premium).toFixed(2) + '%', '']
       ].map(([k,v,c]) => metric(k, v, c)).join('');
     }
 
@@ -1483,7 +1549,7 @@
       });
     }
 
-    // ---- 分区 ----
+    // ---- 分区（今日 / 我的股票 / 计划 / 设置，都在顶部导航） ----
     let currentPane = 'today';
     let lastAccount = null;
     const PANES = ['today', 'watch', 'plan', 'settings'];
@@ -1498,26 +1564,23 @@
     function showPane(name, load = true) {
       currentPane = PANE_LOADERS[name] ? name : 'today';
       PANES.forEach(p => { const el = $('pane-' + p); if (el) el.classList.toggle('active', p === currentPane); });
-      ($('account-subnav').querySelectorAll('button[data-pane]') || []).forEach(b => {
-        const on = b.dataset.pane === currentPane; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on));
-      });
+      const navBtn = Array.from(document.querySelectorAll('#tabs button') || [])
+        .find(b => b.dataset && b.dataset.tab === 'account' && b.dataset.pane === currentPane);
+      if (navBtn && !navBtn.classList.contains('active')) activateNav(navBtn);
       if (load) loadPane(currentPane);
     }
-    $('account-subnav').onclick = (ev) => {
-      const b = ev.target && ev.target.closest ? ev.target.closest('button[data-pane]') : null;
-      if (b) { track('pane:' + b.dataset.pane); showPane(b.dataset.pane); }
-    };
     async function loadAccount() { return loadPane(currentPane); }
     function loadDailyLoop() { loadToday(); loadWatchlist(); loadHoldingsForPlan().then(loadPlan); loadSettings(); }
 
-    // ---- 今日执行单 ----
-    const ACTION_LABEL = {sell:'卖出', near_stop:'留意', plan_exit:'计划离场', buy:'买点', plan:'计划', reminder:'提醒', hold:'持有', none:'无事'};
-    const LEVEL_CHIP = {danger:'danger', warn:'warn', ok:'ok', info:'info'};
+    // ---- 今日：一句话结论 + 要做的事 ----
+    const ACTION_WORD = {sell:['该卖了', 'danger'], near_stop:['留意', 'warn'], plan_exit:['按计划', 'warn'],
+      plan:['计划', 'info'], reminder:['提醒', 'warn'], none:['', 'muted']};
     let lastToday = null;
-    function stat(label, value, sub, cls) {
-      return `<div class="stat"><div class="label">${esc(label)}</div><div class="value ${cls || ''}">${esc(value)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
+    function todoWord(t) {
+      if (t.kind === 'buy') return t.level === 'ok' ? ['可以买', 'ok'] : ['买不了', 'muted'];
+      return ACTION_WORD[t.kind] || ['', 'muted'];
     }
-    function actionButtons(t) {
+    function todoButtons(t) {
       if (t.mark && t.mark.status) {
         const done = t.mark.status === 'done';
         return chip(done ? '已执行' : '已放弃', done ? 'ok' : 'muted')
@@ -1527,78 +1590,132 @@
       const b = [];
       if ((t.kind === 'buy' || t.kind === 'plan') && t.order) b.push('<button class="btn-sm" data-act="bought">已买入</button>');
       if (t.kind === 'sell' || t.kind === 'plan_exit') b.push('<button class="btn-sm" data-act="sold">已卖出</button>');
-      if ((t.kind === 'hold' || t.kind === 'near_stop') && t.order) b.push('<button class="btn-ghost btn-sm" data-act="done">已设条件单</button>');
-      if (t.check && t.ts_code) b.push('<button class="btn-ghost btn-sm" data-act="check">交易前检查</button>');
-      if (t.kind === 'reminder') b.push('<button class="btn-ghost btn-sm" data-act="plan">去写计划</button>');
-      if (['buy', 'sell', 'plan_exit', 'plan', 'near_stop'].includes(t.kind)) b.push('<button class="btn-ghost btn-sm" data-act="skip">放弃</button>');
+      if (t.kind === 'near_stop' && t.order) b.push('<button class="btn-ghost btn-sm" data-act="done">已设止损</button>');
+      if (t.check && t.ts_code && !t.order) b.push('<button class="btn-ghost btn-sm" data-act="check">能买吗？</button>');
+      if (t.kind === 'reminder' && !t.ts_code) b.push('<button class="btn-ghost btn-sm" data-act="plan">去写计划</button>');
+      if (t.kind === 'reminder' && t.ts_code) b.push('<button class="btn-ghost btn-sm" data-act="stocks">去补填</button>');
+      if (t.kind === 'buy' || t.kind === 'plan') b.push('<button class="btn-ghost btn-sm" data-act="skip">不买了</button>');
+      if (t.kind === 'sell' || t.kind === 'plan_exit') b.push('<button class="btn-ghost btn-sm" data-act="skip">暂不卖</button>');
       return b.join('');
     }
-    function actionForm(t) {
+    function todoForms(t) {
       const o = t.order || {};
-      if ((t.kind === 'buy' || t.kind === 'plan') && t.order) return `<div class="act-form" data-form="bought" hidden><span class="muted">成交</span>`
+      let html = '';
+      if ((t.kind === 'buy' || t.kind === 'plan') && t.order) html += `<div class="act-form" data-form="bought" hidden><span class="muted">买到了</span>`
         + `<input data-f="cost" inputmode="decimal" placeholder="成交价" value="${esc(o.limit ?? '')}">`
         + `<input data-f="shares" inputmode="numeric" placeholder="股数" value="${esc(o.shares ?? '')}">`
-        + `<input data-f="date" inputmode="numeric" placeholder="YYYYMMDD" value="${todayKey()}">`
-        + `<button class="btn-sm" data-act="bought-save">标记持有</button></div>`;
-      if (t.kind === 'sell' || t.kind === 'plan_exit') return `<div class="act-form" data-form="sold" hidden><span class="muted">卖出</span>`
-        + `<input data-f="price" inputmode="decimal" placeholder="成交价（可留空）">`
-        + `<input data-f="date" inputmode="numeric" placeholder="YYYYMMDD" value="${todayKey()}">`
-        + `<button class="btn-sm" data-act="sold-save">确认已卖出</button></div>`;
-      return '';
+        + `<input data-f="date" inputmode="numeric" placeholder="日期 YYYYMMDD" value="${todayKey()}">`
+        + `<button class="btn-sm" data-act="bought-save">保存</button></div>`;
+      if (t.kind === 'sell' || t.kind === 'plan_exit') html += `<div class="act-form" data-form="sold" hidden><span class="muted">卖掉了</span>`
+        + `<input data-f="price" inputmode="decimal" placeholder="成交价（可不填）">`
+        + `<input data-f="date" inputmode="numeric" placeholder="日期 YYYYMMDD" value="${todayKey()}">`
+        + `<button class="btn-sm" data-act="sold-save">保存</button></div>`;
+      html += `<div class="act-form" data-form="skip" hidden><input data-f="note" placeholder="为什么不做，比如：开盘涨太多"><button class="btn-sm btn-ghost" data-act="skip-save">保存</button></div>`;
+      return html;
+    }
+    function renderTodo(t, i) {
+      const [word, level] = todoWord(t);
+      return `<div class="todo lv-${esc(t.level)}${t.mark && t.mark.status ? ' marked' : ''}" data-i="${i}">`
+        + `<div class="todo-head"><span class="todo-title">${esc(t.headline || t.title)}</span>${word ? chip(word, level) : ''}</div>`
+        + `<div class="todo-main">${esc(t.instruction || t.next_step)}</div>`
+        + (t.sub ? `<div class="todo-sub">${esc(t.sub)}</div>` : '')
+        + `<div class="todo-foot"><button class="linkish" data-act="why">为什么 ▸</button><span class="act-btns">${todoButtons(t)}</span></div>`
+        + `<div class="todo-why" hidden>${esc(t.detail)}<br>${esc(t.next_step)}</div>`
+        + todoForms(t) + `</div>`;
+    }
+    function renderSetup() {
+      return `<div class="card setup"><div class="setup-title">先花 2 分钟设置一下</div>`
+        + `<ol><li>在「我的股票」输入名称，添加你关注的股票</li><li>手上有股票的，点它选「我持有」，填成本价、日期和股数</li>`
+        + `<li>以后每天收盘后打开这里，看「要做几件事」</li></ol>`
+        + `<button class="btn-sm" data-act="stocks">去添加股票</button></div>`;
     }
     function renderToday(x) {
-      const a = x.account || {}, m = x.market || {}, c = x.counts || {};
-      const cap = m.exposure_cap != null ? `上限 ${pct(m.exposure_cap, 0)}（${m.regime_label || ''}）` : '市场状态未知';
-      const summary = [
-        stat('总仓位', pct(a.exposure_pct, 1) || '—', cap, m.exposure_cap != null && a.exposure_pct > m.exposure_cap ? 'danger' : ''),
-        stat('可用资金（估算）', a.cash != null ? yuan(a.cash) : '—', a.room != null ? `还可加仓 ${yuan(Math.max(a.room, 0))}` : ''),
-        stat('待卖出', String(c.sell ?? 0), `持有 ${a.positions ?? 0} 只`, c.sell ? 'danger' : ''),
-        stat('买点', String(c.buy ?? 0), `观察池 ${c.watch ?? 0} 只`, c.buy ? 'ok' : ''),
-      ].join('');
-      const ctx = [x.basis_date ? `依据 ${dayText(x.basis_date)} 收盘` : '', x.plan_date ? `计划 ${dayText(x.plan_date)}` : ''].filter(Boolean).join(' · ');
+      const h = x.hero || {};
       const actions = x.actions || [];
-      const main = actions.filter(t => t.kind !== 'hold'), holds = actions.filter(t => t.kind === 'hold');
-      const one = (t, i) => `<div class="action lv-${esc(t.level)}${t.kind === 'hold' ? ' quiet' : ''}${t.mark && t.mark.status ? ' marked' : ''}" data-i="${i}">`
-        + `${chip(ACTION_LABEL[t.kind] || t.kind, LEVEL_CHIP[t.level])}<div class="title">${esc(t.title)}</div>`
-        + `<div class="act act-btns">${actionButtons(t)}</div>`
-        + `<div class="detail">${esc(t.detail)}</div><div class="next">${esc(t.next_step)}</div>`
-        + actionForm(t)
-        + `<div class="act-form" data-form="skip" hidden><input data-f="note" placeholder="放弃原因，如：高开超过限价"><button class="btn-sm btn-ghost" data-act="skip-save">确认放弃</button></div></div>`;
-      const indexed = actions.map((t, i) => [t, i]);
-      return {summary, ctx, title: x.title || '执行单', notice: x.notice || '',
-        html: indexed.filter(([t]) => t.kind !== 'hold').map(([t, i]) => one(t, i)).join('')
-          + (holds.length ? `<div class="section-label">持有中（${holds.length}）· 止损条件单</div>` + indexed.filter(([t]) => t.kind === 'hold').map(([t, i]) => one(t, i)).join('') : '')};
+      const todos = actions.map((t, i) => [t, i]).filter(([t]) => t.kind !== 'hold' && t.kind !== 'none');
+      const holds = actions.filter(t => t.kind === 'hold');
+      const hero = `<div class="muted">${esc(h.day_line || '')}</div>`
+        + `<div class="hero-title">${esc(h.headline || '')}</div>`
+        + `<div class="hero-market">${esc(h.market_line || '')}</div>`
+        + (h.basis_line ? `<div class="muted hero-basis">${esc(h.basis_line)}</div>` : '');
+      const holdsHtml = holds.length ? `<details class="card holds"><summary>${esc(h.holds_line)}</summary>`
+        + holds.map(t => `<div class="kv"><span class="k">${esc(t.headline)}</span><span class="v">${esc(t.instruction)}${t.sub ? ' · ' + esc(t.sub) : ''}</span></div>`).join('')
+        + `</details>` : '';
+      return {hero, setup: x.setup ? renderSetup() : '', todos: todos.map(([t, i]) => renderTodo(t, i)).join(''), holds: holdsHtml};
     }
+    // 今日盘面：全市场短线视角（市场 / 涨停 / 机会），与「要做几件事」分开，点一下进入对应页面。
+    function renderPulse(m, b, o, d) {
+      const tile = (go, k, v, sub) => `<button class="pulse-tile" data-go="${go}"><span class="pulse-k">${esc(k)} ›</span>`
+        + `<span class="pulse-v">${esc(v)}</span><span class="pulse-s">${esc(sub)}</span></button>`;
+      const market = confirmedFor(m, d) ? (m.data || {}) : null;
+      const board = confirmedFor(b, d) ? (b.data || {}) : null;
+      const plan = confirmedFor(o, d) && o.data && o.data.available !== false ? o.data : null;
+      const count = (x) => x == null ? '—' : num(x);
+      const tiers = (plan && plan.tier_counts) || {};
+      const tiles = [
+        market ? tile('market', '市场', market.state || '—', `涨 ${count(market.advance_count)} / 跌 ${count(market.decline_count)}`)
+          : tile('market', '市场', '待确认', '这天的行情还没准备好'),
+        board ? tile('board', '涨停', `${count(board.limit_up_count)} 家`,
+          `${board.emotion_cycle || '—'} · 最高 ${count((board.ladder || {}).max_height || board.leader_height)} 板`)
+          : tile('board', '涨停', '待确认', '这天的涨停数据还没准备好'),
+        o === undefined ? tile('opportunities', '机会', '计算中…', '刚启动时要算几秒')
+        : plan ? tile('opportunities', '机会', `A 级 ${tiers.A || 0} 只`,
+          plan.can_attack ? `可进攻 · 最多新开 ${plan.max_new_positions || 0} 只` : '不进攻，先观望')
+          : tile('opportunities', '机会', '待确认', o && o.ok ? '这天还没有机会结果' : '机会数据获取失败'),
+      ];
+      return `<div class="pulse-head"><span>今天的盘面</span><span class="muted">全市场短线视角 · 依据 ${esc(dateTextOf(d))} 收盘</span></div>`
+        + `<div class="pulse-tiles">${tiles.join('')}</div>`;
+    }
+    async function loadPulse(d) {
+      if (!d) { $('td-market').innerHTML = ''; return; }
+      const current = () => lastToday && lastToday.basis_date === d;
+      const opps = apiGet(`/opportunities/plan?date=${d}`);  // 冷启动要算几秒，不挡住市场和涨停
+      const [m, b] = await Promise.all([apiGet(`/market/state?date=${d}`), apiGet(`/board/environment?date=${d}`)]);
+      if (!current()) return;
+      $('td-market').innerHTML = renderPulse(m, b, undefined, d);
+      const o = await opps;
+      if (current()) $('td-market').innerHTML = renderPulse(m, b, o, d);
+    }
+    $('td-market').onclick = (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest('[data-go]') : null;
+      const nav = b && Array.from(document.querySelectorAll('#tabs button')).find(x => x.dataset && x.dataset.tab === b.dataset.go);
+      if (nav) nav.click();
+    };
     async function loadToday() {
       const r = await apiGet('/personal/today');
-      if (!r.ok) { $('td-actions').innerHTML = errorBox(r.error); return; }
+      if (!r.ok) { $('td-hero').innerHTML = errorBox(r.error); return; }
       lastToday = r.data || {};
       const view = renderToday(lastToday);
-      $('td-title').textContent = view.title;
-      $('td-notice').textContent = view.notice;
-      $('td-summary').innerHTML = view.summary;
-      $('td-context').textContent = view.ctx;
-      $('td-actions').innerHTML = view.html || '<span class="muted">暂无数据。</span>';
+      $('td-setup').innerHTML = view.setup;
+      $('td-hero').innerHTML = view.hero;
+      $('td-actions').innerHTML = view.todos;
+      $('td-holds').innerHTML = view.holds;
+      return loadPulse(lastToday.basis_date);
     }
     async function markAction(t, status, note) {
       return apiPost('/personal/today/mark', {basis: lastToday.basis_date, key: t.key, status, note: note || ''});
     }
     function runPretrade(code) {
-      showPane('today', false);
+      showPane('watch', false);
+      if ($('pc-box')) $('pc-box').open = true;
       $('pc-code').value = code; $('pc-entry').value = ''; $('pc-stop').value = '';
       $('pc-submit').click();
       $('pc-code').scrollIntoView({block:'center'});
     }
+    function goToStocks() { showPane('watch'); if ($('wl-code').focus) $('wl-code').focus(); }
+    $('td-setup').onclick = (ev) => { const b = ev.target && ev.target.closest ? ev.target.closest('button') : null; if (b) goToStocks(); };
     $('td-actions').onclick = async (ev) => {
       const b = ev.target && ev.target.closest ? ev.target.closest('button[data-act]') : null;
       if (!b || !lastToday) return;
-      const box = b.closest('.action'), t = (lastToday.actions || [])[Number(box.dataset.i)];
+      const box = b.closest('.todo'), t = (lastToday.actions || [])[Number(box.dataset.i)];
       if (!t) return;
       const form = (name) => box.querySelector(`[data-form="${name}"]`);
       const field = (name, f) => (form(name).querySelector(`[data-f="${f}"]`) || {}).value || '';
       const act = b.dataset.act;
+      if (act === 'why') { const w = box.querySelector('.todo-why'); w.hidden = !w.hidden; b.textContent = w.hidden ? '为什么 ▸' : '为什么 ▾'; return; }
       if (act === 'check') return runPretrade(t.ts_code);
       if (act === 'plan') return showPane('plan');
+      if (act === 'stocks') return goToStocks();
       if (act === 'bought' || act === 'sold' || act === 'skip') { const f = form(act); if (f) f.hidden = !f.hidden; return; }
       track({done:'action:mark_done', undo:'action:mark_undo', 'skip-save':'action:mark_skip', 'bought-save':'action:hold', 'sold-save':'action:sell'}[act] || 'action:mark_done');
       let res;
@@ -1614,11 +1731,11 @@
         res = await apiPost('/personal/watchlist/sell', {ts_code: t.ts_code, exit_date: field('sold', 'date'), exit_price: price ? Number(price) : null});
         if (res.ok) res = await markAction(t, 'done');
       }
-      if (res && !res.ok) { box.insertAdjacentHTML('beforeend', `<div class="danger" style="grid-column:1/-1;">${esc(res.error)}</div>`); return; }
+      if (res && !res.ok) { box.insertAdjacentHTML('beforeend', `<div class="danger">${esc(res.error)}</div>`); return; }
       loadToday();
     };
 
-    // ---- 交易前检查 ----
+    // ---- 能买吗？（手动检查） ----
     $('pc-submit').onclick = async () => {
       track('action:pretrade');
       const params = new URLSearchParams({ts_code: $('pc-code').value.trim()});
@@ -1638,52 +1755,49 @@
         + `<div class="muted" style="margin-top:6px;">${esc(x.note)}</div>`;
     };
 
-    // ---- 观察池（含持有） ----
+    // ---- 我的股票：持有中 / 观察中，每只一个状态词 ----
     function holdingLine(s) {
       const h = s.holding || {}, ex = s.exit || {};
-      if (!s.holding) return s.held ? `<div class="holding-line">${chip('持有', 'info')} 来自旧成交记录</div>` : '';
-      const profit = ex.profit_pct != null ? `，按收盘 ${ex.profit_pct >= 0 ? '+' : ''}${(ex.profit_pct * 100).toFixed(1)}%` : '';
-      return `<div class="holding-line">${chip('持有', 'info')} 成本 ${fixed(h.cost, 3)} · ${h.shares ? h.shares + ' 股' : '股数未填'} · ${dayText(h.entry_date)} 买入${profit}`
-        + (ex.verdict ? ` · ${esc(ex.verdict)}${ex.stop ? `，离场线 ${fixed(ex.stop)}` : ''}` : '') + `</div>`;
+      if (!s.holding) return s.held ? '<div class="holding-line">持有（来自旧成交记录）</div>' : '';
+      return `<div class="holding-line">成本 ${fixed(h.cost, 2)} · ${h.shares ? h.shares + ' 股' : '股数未填'} · ${dayText(h.entry_date)} 买入`
+        + (ex.stop ? ` · 止损线 ${fixed(ex.stop)}` : '') + `</div>`;
+    }
+    function stockRow(s) {
+      const code = esc(s.ts_code);
+      const holdBtn = s.holding ? `<button class="btn-sm" data-wl="sold" data-code="${code}">我卖了</button>`
+                                : s.held ? '' : `<button class="btn-ghost btn-sm" data-wl="hold" data-code="${code}">我持有</button>`;
+      return `<div class="stock" data-code="${code}">`
+        + `<button class="stock-row" data-row="${code}"><span class="stock-name"><b>${esc(s.name || s.ts_code)}</b><span class="muted">${esc(s.fact || '')}</span></span>${chip(s.word || s.entry, s.word_level)}</button>`
+        + `<div class="stock-detail" hidden>`
+        + holdingLine(s)
+        + `<div class="flex" style="margin:6px 0;">${holdBtn}<button class="btn-ghost btn-sm" data-check="${code}">能买吗？</button><button class="btn-danger btn-sm" data-remove="${code}">移除</button></div>`
+        + `<div class="act-form" data-wl-form="hold-${code}" hidden><span class="muted">我持有</span><input data-f="cost" inputmode="decimal" placeholder="成本价">`
+        + `<input data-f="shares" inputmode="numeric" placeholder="股数"><input data-f="date" inputmode="numeric" placeholder="买入日期 YYYYMMDD" value="${todayKey()}">`
+        + `<button class="btn-sm" data-wl="hold-save" data-code="${code}">保存</button></div>`
+        + `<div class="act-form" data-wl-form="sold-${code}" hidden><span class="muted">我卖了</span><input data-f="price" inputmode="decimal" placeholder="成交价（可不填）">`
+        + `<input data-f="date" inputmode="numeric" placeholder="日期 YYYYMMDD" value="${todayKey()}"><button class="btn-sm" data-wl="sold-save" data-code="${code}">保存</button></div>`
+        + `<details><summary class="muted">详细依据</summary><div class="muted">${esc(s.ts_code)} · 按 ${dayText((s.basis || {}).last_date || s.as_of)} 收盘</div>${conditionsList(s)}</details>`
+        + `</div></div>`;
     }
     async function loadWatchlist() {
-      $('wl-view').innerHTML = '<span class="muted">正在按规则计算（首次需获取复权日线）…</span>';
+      $('wl-view').innerHTML = '<span class="muted">正在计算…</span>';
       const r = await apiGet('/personal/watchlist/status');
       if (!r.ok) { $('wl-view').innerHTML = errorBox(r.error); return; }
       const items = r.data.items || [];
-      if (!items.length) { $('wl-view').innerHTML = '<div class="muted">观察池为空。输入股票名称加入后，这里逐只显示规则状态和依据。</div>'; return; }
-      const rows = items.map(s => {
-        const w = s.weekly || {}, m = s.macd || {}, ma = s.ma || {};
-        const facts = [
-          w.week_close != null ? `周收盘 ${fixed(w.week_close)} / 13周线 ${fixed(w.ma)} ${w.rising ? '↑' : '↓'}` : '周线数据不足',
-          m.dif != null ? `DIF ${fixed(m.dif, 3)}${m.cross ? `，${dayText(m.cross.date)} 金叉 量比 ${fixed(m.cross.volume_ratio)}` : ''}` : '',
-          ma.ma21 != null ? `21日线 ${fixed(ma.ma21)}（偏离 ${pct(ma.distance_pct, 1)}）· 建议止损 ${fixed(ma.suggested_stop)}` : '',
-        ].filter(Boolean).map(x => `<div class="muted">${x}</div>`).join('');
-        const day = (s.basis || {}).last_date || s.as_of;
-        const code = esc(s.ts_code);
-        const holdBtn = s.holding ? `<button class="btn-sm" data-wl="sold" data-code="${code}">已卖出</button>`
-                                  : s.held ? '' : `<button class="btn-ghost btn-sm" data-wl="hold" data-code="${code}">标记持有</button>`;
-        return `<div class="row" style="flex-wrap:wrap;">`
-          + `<span><b>${esc(stockLabel(s))}</b>`
-          + `<div style="margin:4px 0;">${chip(s.entry, ENTRY_CLASS[s.entry])}${day ? ` <span class="muted">按 ${dayText(day)} 收盘</span>` : ''}</div>${holdingLine(s)}${facts}</span>`
-          + `<span class="flex">${holdBtn}<button class="btn-ghost btn-sm" data-check="${code}">交易前检查</button><button class="btn-danger btn-sm" data-remove="${code}">移除</button></span>`
-          + `<div class="act-form" data-wl-form="hold-${code}" hidden><span class="muted">标记持有</span><input data-f="cost" inputmode="decimal" placeholder="成本价">`
-          + `<input data-f="shares" inputmode="numeric" placeholder="股数（可选）"><input data-f="date" inputmode="numeric" placeholder="YYYYMMDD" value="${todayKey()}">`
-          + `<button class="btn-sm" data-wl="hold-save" data-code="${code}">保存</button></div>`
-          + `<div class="act-form" data-wl-form="sold-${code}" hidden><span class="muted">已卖出</span><input data-f="price" inputmode="decimal" placeholder="成交价（可留空）">`
-          + `<input data-f="date" inputmode="numeric" placeholder="YYYYMMDD" value="${todayKey()}"><button class="btn-sm" data-wl="sold-save" data-code="${code}">确认</button></div>`
-          + `<details style="flex-basis:100%;"><summary class="muted">依据</summary>${conditionsList(s)}</details></div>`;
-      }).join('');
-      $('wl-view').innerHTML = `<div class="muted">规则按 ${dayText(r.data.evaluation_day)} 收盘计算</div>${rows}`;
+      if (!items.length) { $('wl-view').innerHTML = '<div class="empty">还没有股票。在下面输入名称添加，最多 10 只。</div>'; return; }
+      const held = items.filter(s => s.held), watching = items.filter(s => !s.held);
+      $('wl-view').innerHTML = (held.length ? `<div class="group-label">持有中</div>${held.map(stockRow).join('')}` : '')
+        + (watching.length ? `<div class="group-label">观察中</div>${watching.map(stockRow).join('')}` : '');
     }
     $('wl-view').onclick = async (ev) => {
       const b = ev.target && ev.target.closest ? ev.target.closest('button') : null;
       if (!b) return;
+      if (b.dataset.row) { const d = b.parentElement.querySelector('.stock-detail'); if (d) d.hidden = !d.hidden; return; }
       if (b.dataset.check) return runPretrade(b.dataset.check);
       if (b.dataset.remove) {
         track('action:watch_remove');
         const res = await apiPost('/personal/watchlist/remove', {ts_code: b.dataset.remove});
-        $('wl-result').innerHTML = res.ok ? `<span class="ok">已移除 ${esc(b.dataset.remove)}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+        $('wl-result').innerHTML = res.ok ? '<span class="ok">已移除</span>' : `<span class="danger">${esc(res.error)}</span>`;
         return loadWatchlist();
       }
       const code = b.dataset.code, kind = b.dataset.wl;
@@ -1694,13 +1808,13 @@
       const res = kind === 'hold-save'
         ? await apiPost('/personal/watchlist/hold', {ts_code: code, cost: Number(v('cost')), shares: v('shares') ? Number(v('shares')) : null, entry_date: v('date')})
         : await apiPost('/personal/watchlist/sell', {ts_code: code, exit_date: v('date'), exit_price: v('price') ? Number(v('price')) : null});
-      $('wl-result').innerHTML = res.ok ? `<span class="ok">已${kind === 'hold-save' ? '标记持有' : '标记卖出'}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+      $('wl-result').innerHTML = res.ok ? `<span class="ok">已保存</span>` : `<span class="danger">${esc(res.error)}</span>`;
       if (res.ok) loadWatchlist();
     };
     $('wl-add').onclick = async () => {
       track('action:watch_add');
       const res = await apiPost('/personal/watchlist', {ts_code: $('wl-code').value.trim()});
-      $('wl-result').innerHTML = res.ok ? `<span class="ok">已加入 ${esc(stockLabel(res.data))}</span>` : `<span class="danger">${esc(res.error)}</span>`;
+      $('wl-result').innerHTML = res.ok ? `<span class="ok">已添加 ${esc(stockLabel(res.data))}</span>` : `<span class="danger">${esc(res.error)}</span>`;
       if (res.ok) { $('wl-code').value = ''; loadWatchlist(); }
     };
 
